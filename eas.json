@@ -12,7 +12,17 @@
       "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "ios": {
+        "cache": {
+          "disabled": true
+        }
+      },
+      "android": {
+        "cache": {
+          "disabled": true
+        }
+      }
     }
   },
   "submit": {
