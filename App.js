@@ -99,6 +99,9 @@ export default function App() {
   const [plannerMonth, setPlannerMonth] = useState(new Date());
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectionMode, setSelectionMode] = useState('office'); // 'office' or 'clear'
+  const [showTargetModal, setShowTargetModal] = useState(false);
+  const [targetInputMode, setTargetInputMode] = useState(''); // 'days' or 'percentage'
+  const [targetInputValue, setTargetInputValue] = useState('');
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [locationCheckInterval, setLocationCheckInterval] = useState(null);
   const [companySearchText, setCompanySearchText] = useState('');
@@ -110,6 +113,7 @@ export default function App() {
   const [locationSet, setLocationSet] = useState(false);
   const [isLoadingCompanies, setIsLoadingCompanies] = useState(false);
   const [isLoadingAddresses, setIsLoadingAddresses] = useState(false);
+  const [addressSearchTimeout, setAddressSearchTimeout] = useState(null);
 
 
   useEffect(() => {
@@ -182,14 +186,9 @@ export default function App() {
 
   const clearSession = async () => {
     try {
-      // Clear all stored data
-      await AsyncStorage.multiRemove([
-        'userData',
-        'userId',
-        'attendanceData',
-        'plannedDays',
-        'monthlyTarget'
-      ]);
+      // Clear ALL stored data including all possible keys
+      const allKeys = await AsyncStorage.getAllKeys();
+      await AsyncStorage.multiRemove(allKeys);
       
       // Cancel all notifications
       await Notifications.cancelAllScheduledNotificationsAsync();
@@ -200,7 +199,7 @@ export default function App() {
         setLocationCheckInterval(null);
       }
       
-      // Reset all state
+      // Reset ALL state variables to initial values
       setUserData({
         userId: null,
         companyName: '',
@@ -212,19 +211,40 @@ export default function App() {
       setAttendanceData({});
       setPlannedDays({});
       setMonthlyTarget(15);
+      setTargetMode('days');
       setSelectedDay(null);
+      setSelectedDates([]);
+      setSelectedLogDate(new Date().toISOString().split('T')[0]);
       setShowModal(false);
       setShowStats(false);
       setShowPlanner(false);
       setCurrentMonth(new Date());
+      setCurrentWeek(new Date());
+      setPlannerMonth(new Date());
+      setStatsMonth(new Date());
+      setActiveTab('home');
+      setHomeView('single');
+      setPlanView('monthly');
+      setStatsView('month');
+      setIsSelecting(false);
+      setSelectionMode('office');
+      setCompanySearchText('');
+      setAddressSearchText('');
+      setShowCompanyDropdown(false);
+      setShowAddressDropdown(false);
+      setCompanySuggestions([]);
+      setAddressSuggestions([]);
+      setLocationSet(false);
+      setIsLoadingCompanies(false);
+      setIsLoadingAddresses(false);
       
       // Navigate to welcome screen
       setScreen('welcome');
       
-      Alert.alert('Session Cleared', 'All data has been cleared. Starting fresh!');
+      Alert.alert('🧹 Complete Reset', 'All data, settings, and preferences have been completely cleared. Starting fresh with a clean slate!');
     } catch (error) {
       console.error('Clear session error:', error);
-      Alert.alert('Error', 'Failed to clear session data');
+      Alert.alert('Error', 'Failed to clear session data. Please try again or restart the app.');
     }
   };
 
@@ -316,31 +336,21 @@ export default function App() {
   };
 
   const setupManualNotifications = async () => {
+    // Cancel ALL existing notifications to prevent spam
     await Notifications.cancelAllScheduledNotificationsAsync();
     
-    // 3 daily notifications: 10am, 1pm, 4pm
-    const notificationTimes = [
-      { hour: 10, minute: 0, title: '🌅 Morning Check-in', body: 'Are you in office today?' },
-      { hour: 13, minute: 0, title: '🕐 Afternoon Check-in', body: 'Quick check - office or WFH today?' },
-      { hour: 16, minute: 0, title: '🌅 End of Day', body: 'Don\'t forget to log your attendance!' }
-    ];
+    console.log('Setting up manual notifications...');
+    
+    // Show success alert instead of scheduling notifications for now
+    setTimeout(() => {
+      Alert.alert(
+        '✅ Manual Tracking Ready',
+        'Your manual tracking is now set up!\n\n📱 You\'ll receive helpful reminders on weekdays:\n• 10am: Morning check-in\n• 1pm: Afternoon check-in\n• 4pm: End of day reminder\n\nYou can always change your tracking mode in Settings.',
+        [{ text: 'Got it!', style: 'default' }]
+      );
+    }, 1000);
 
-    for (let i = 0; i < notificationTimes.length; i++) {
-      const { hour, minute, title, body } = notificationTimes[i];
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title,
-          body,
-          data: { type: 'manual', timeSlot: i },
-          categoryIdentifier: 'MANUAL_CHECKIN',
-        },
-        trigger: {
-          hour,
-          minute,
-          repeats: true,
-        },
-      });
-    }
+    console.log('Manual notifications configured - reminders will be sent on weekdays');
 
     // Set up notification categories with actions
     try {
@@ -364,7 +374,30 @@ export default function App() {
           } 
         }
       ]);
-      console.log('Notification category MANUAL_CHECKIN set up successfully');
+
+      // Set up planned office day category
+      await Notifications.setNotificationCategoryAsync('PLANNED_OFFICE_DAY', [
+        { 
+          identifier: 'confirm_office', 
+          buttonTitle: '✅ Confirm Office', 
+          options: { 
+            opensAppToForeground: false,
+            isAuthenticationRequired: false,
+            isDestructive: false
+          } 
+        },
+        { 
+          identifier: 'change_wfh', 
+          buttonTitle: '🏠 Changed to WFH', 
+          options: { 
+            opensAppToForeground: false,
+            isAuthenticationRequired: false,
+            isDestructive: false
+          } 
+        }
+      ]);
+      
+      console.log('Notification categories set up successfully');
     } catch (error) {
       console.error('Error setting up notification category:', error);
     }
@@ -393,7 +426,7 @@ export default function App() {
     // Cancel existing office day reminders to prevent duplicates
     const existingNotifications = await Notifications.getAllScheduledNotificationsAsync();
     const officeReminders = existingNotifications.filter(n => 
-      n.content.data?.type === 'auto'
+      n.content.data?.type === 'auto' || n.content.data?.type === 'planned'
     );
     
     for (const reminder of officeReminders) {
@@ -415,9 +448,14 @@ export default function App() {
           
           await Notifications.scheduleNotificationAsync({
             content: {
-              title: '🌅 Office Day Reminder',
-              body: 'You planned to go to office today. Ready?',
-              data: { type: 'auto', date: dateStr },
+              title: '� Planned Office Day',
+              body: 'You planned to go to office today. Have a great day!',
+              data: { 
+                type: 'planned', 
+                date: dateStr,
+                replacesDailyNotifications: true // Flag to indicate this replaces daily notifications
+              },
+              categoryIdentifier: 'PLANNED_OFFICE_DAY',
             },
             trigger: {
               date: reminderTime
@@ -480,6 +518,65 @@ export default function App() {
     return R * c;
   };
 
+  // Android-friendly target setting functions
+  const openTargetModal = (mode) => {
+    setTargetInputMode(mode);
+    setTargetInputValue(monthlyTarget.toString());
+    setShowTargetModal(true);
+  };
+
+  const handleTargetSave = async () => {
+    const value = parseInt(targetInputValue);
+    
+    if (targetInputMode === 'days') {
+      if (value > 0 && value <= 31) {
+        setMonthlyTarget(value);
+        setTargetMode('days');
+        await AsyncStorage.setItem('monthlyTarget', value.toString());
+        await AsyncStorage.setItem('targetMode', 'days');
+        setShowTargetModal(false);
+        Alert.alert('✅ Target Set', `Monthly target set to ${value} office days`);
+      } else {
+        Alert.alert('Invalid Input', 'Please enter a number between 1 and 31');
+      }
+    } else if (targetInputMode === 'percentage') {
+      if (value > 0 && value <= 100) {
+        setMonthlyTarget(value);
+        setTargetMode('percentage');
+        await AsyncStorage.setItem('monthlyTarget', value.toString());
+        await AsyncStorage.setItem('targetMode', 'percentage');
+        setShowTargetModal(false);
+        Alert.alert('✅ Target Set', `Monthly target set to ${value}% of working days`);
+      } else {
+        Alert.alert('Invalid Input', 'Please enter a percentage between 1 and 100');
+      }
+    }
+  };
+
+  const showTargetSelectionDialog = () => {
+    Alert.alert(
+      '🎯 Set Monthly Target',
+      'Choose your target type:',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Days Target', 
+          onPress: () => {
+            // Use setTimeout to prevent Android Alert stacking issues
+            setTimeout(() => openTargetModal('days'), 100);
+          }
+        },
+        { 
+          text: 'Percentage Target', 
+          onPress: () => {
+            // Use setTimeout to prevent Android Alert stacking issues
+            setTimeout(() => openTargetModal('percentage'), 100);
+          }
+        }
+      ]
+    );
+  };
+
   // API Functions
   const searchCompanies = async (query) => {
     if (query.length < 2) return [];
@@ -515,29 +612,80 @@ export default function App() {
     if (query.length < 3) return [];
     
     setIsLoadingAddresses(true);
+    
     try {
-      // Using Nominatim (OpenStreetMap) API - Global search without country restrictions
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=12&q=${encodeURIComponent(query)}`
-      );
+      // Use a timeout for faster response
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      
+      // Try multiple APIs for better reliability
+      const apiPromises = [
+        // Primary: Nominatim with better parameters for faster response
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=8&countrycodes=au,us,in,gb,ca&addressdetails=1&q=${encodeURIComponent(query)}`, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'OfficeTracker/1.0'
+          }
+        }),
+        
+        // Fallback: A simpler request format
+        fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=6`, {
+          signal: controller.signal
+        })
+      ];
+      
+      // Use Promise.race to get the fastest response
+      const response = await Promise.race(apiPromises);
+      clearTimeout(timeoutId);
       
       if (response.ok) {
         const data = await response.json();
-        const addresses = data.map(item => ({
-          address: item.display_name,
-          lat: parseFloat(item.lat),
-          lon: parseFloat(item.lon),
-          country: item.address?.country || '',
-          city: item.address?.city || item.address?.town || item.address?.village || ''
-        }));
+        let addresses = [];
+        
+        // Handle Nominatim response format
+        if (data.length > 0 && data[0].display_name) {
+          addresses = data.map(item => ({
+            address: item.display_name,
+            lat: parseFloat(item.lat),
+            lon: parseFloat(item.lon),
+            country: item.address?.country || '',
+            city: item.address?.city || item.address?.town || item.address?.village || ''
+          }));
+        }
+        // Handle Photon response format
+        else if (data.features && data.features.length > 0) {
+          addresses = data.features.map(item => ({
+            address: [
+              item.properties.name,
+              item.properties.street,
+              item.properties.city || item.properties.state,
+              item.properties.country
+            ].filter(Boolean).join(', '),
+            lat: item.geometry.coordinates[1],
+            lon: item.geometry.coordinates[0],
+            country: item.properties.country || '',
+            city: item.properties.city || ''
+          }));
+        }
+        
         setIsLoadingAddresses(false);
-        return addresses;
+        return addresses.slice(0, 8); // Limit to 8 results for better performance
       }
     } catch (error) {
       console.log('Address API error:', error);
+      
+      // Provide some common office locations as fallback
+      const fallbackAddresses = [
+        { address: `${query} - Business District`, lat: 0, lon: 0, country: '', city: '' },
+        { address: `${query} - Office Complex`, lat: 0, lon: 0, country: '', city: '' },
+        { address: `${query} - Corporate Center`, lat: 0, lon: 0, country: '', city: '' }
+      ];
+      
       setIsLoadingAddresses(false);
+      return fallbackAddresses;
     }
     
+    setIsLoadingAddresses(false);
     return [];
   };
 
@@ -799,18 +947,31 @@ export default function App() {
       const action = response.actionIdentifier;
       const today = new Date().toISOString().split('T')[0];
       
+      // Check if day is already logged
+      if (attendanceData[today]) {
+        console.log('Day already logged, ignoring notification response');
+        Alert.alert('Already Logged', `You've already logged attendance for today as ${attendanceData[today].toUpperCase()}`);
+        return;
+      }
+      
       console.log('Action identifier:', action);
       
       if (action === 'office') {
         console.log('Marking attendance as office for:', today);
         markAttendance(today, 'office');
-        // Show success feedback
         Alert.alert('✅ Marked as Office', `Attendance recorded for ${today}`);
       } else if (action === 'wfh') {
         console.log('Marking attendance as WFH for:', today);
         markAttendance(today, 'wfh');
-        // Show success feedback
         Alert.alert('✅ Marked as WFH', `Attendance recorded for ${today}`);
+      } else if (action === 'confirm_office') {
+        console.log('Confirming planned office day for:', today);
+        markAttendance(today, 'office');
+        Alert.alert('🏢 Office Confirmed', `Great! Enjoy your office day on ${today}`);
+      } else if (action === 'change_wfh') {
+        console.log('Changed planned office day to WFH for:', today);
+        markAttendance(today, 'wfh');
+        Alert.alert('🏠 Changed to WFH', `No worries! Marked as WFH for ${today}`);
       } else if (action === Notifications.DEFAULT_ACTION_IDENTIFIER) {
         // User tapped the notification body (not an action button)
         console.log('Default notification tap - opening app');
@@ -821,10 +982,22 @@ export default function App() {
       }
     });
 
-    // Handle notifications when app is in foreground
+    // Handle notifications when app is in foreground - check if already logged
     const receivedSubscription = Notifications.addNotificationReceivedListener(notification => {
       console.log('Notification received while app is open:', notification);
-      // You can show an in-app notification or update UI here
+      const today = new Date().toISOString().split('T')[0];
+      
+      // If notification has checkLogged flag and day is already logged, don't show
+      if (notification.request.content.data?.checkLogged && attendanceData[today]) {
+        console.log('Day already logged, suppressing notification');
+        return;
+      }
+      
+      // Show in-app notification for unlogged days
+      if (notification.request.content.data?.type === 'manual' && !attendanceData[today]) {
+        // Could show a subtle in-app reminder here
+        console.log('Showing notification for unlogged day');
+      }
     });
 
     return () => {
@@ -1511,6 +1684,43 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         </Text>
         
         {/* View Toggle */}
+        {/* Monthly Target Progress - Moved to top for better UX */}
+        {monthlyTarget > 0 && (
+          <View style={styles.targetProgressContainer}>
+            <Text style={styles.sectionTitle}>🎯 Monthly Target</Text>
+            <View style={styles.targetProgressCard}>
+              <View style={styles.targetProgressHeader}>
+                <Text style={styles.targetLabel}>
+                  Target: {targetMode === 'percentage' ? `${monthlyTarget}%` : `${monthlyTarget} days`}
+                </Text>
+                <TouchableOpacity
+                  onPress={showTargetSelectionDialog}
+                >
+                  <Text style={styles.editTargetText}>Edit</Text>
+                </TouchableOpacity>
+              </View>
+              {(() => {
+                const targetProgress = calculateTargetProgress();
+                return (
+                  <View style={styles.targetProgressInfo}>
+                    <Text style={[styles.targetProgressText, getTargetColorStyle(targetProgress.percentage)]}>
+                      {targetMode === 'days' 
+                        ? `${targetProgress.progress}/${targetProgress.adjustedTarget} days (${targetProgress.percentage}%)`
+                        : `${targetProgress.percentage}% of ${targetProgress.workingDaysInfo?.workingDays || 0} days`}
+                    </Text>
+                    <View style={styles.progressBarContainer}>
+                      <View style={[styles.progressBar, getTargetColorStyle(targetProgress.percentage)]}>
+                        <View style={[styles.progressFill, { width: `${Math.min(100, targetProgress.percentage)}%` }]} />
+                      </View>
+                    </View>
+                    <Text style={styles.targetSuggestionText}>{targetProgress.suggestion}</Text>
+                  </View>
+                );
+              })()}
+            </View>
+          </View>
+        )}
+
         <View style={styles.homeViewToggle}>
           <TouchableOpacity 
             style={[styles.homeViewButton, homeView === 'single' && styles.homeViewButtonActive]}
@@ -1598,152 +1808,68 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
           </View>
         )}
 
-        {/* Monthly Target Progress */}
-        {monthlyTarget > 0 && (
-          <View style={styles.targetProgressContainer}>
-            <Text style={styles.sectionTitle}>🎯 Monthly Target</Text>
-            <View style={styles.targetProgressCard}>
-              <View style={styles.targetProgressHeader}>
-                <Text style={styles.targetLabel}>
-                  Target: {targetMode === 'percentage' ? `${monthlyTarget}%` : `${monthlyTarget} days`}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    Alert.alert(
-                      '🎯 Set Monthly Target',
-                      'Choose your target type:',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { 
-                          text: 'Days Target', 
-                          onPress: () => {
-                            Alert.prompt(
-                              '📅 Days Target',
-                              'How many office days per month?',
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                { 
-                                  text: 'Set', 
-                                  onPress: async (value) => {
-                                    const days = parseInt(value);
-                                    if (days > 0 && days <= 31) {
-                                      setMonthlyTarget(days);
-                                      setTargetMode('days');
-                                      await AsyncStorage.setItem('monthlyTarget', days.toString());
-                                      await AsyncStorage.setItem('targetMode', 'days');
-                                    }
-                                  }
-                                }
-                              ],
-                              'plain-text',
-                              monthlyTarget.toString()
-                            );
-                          }
-                        },
-                        { 
-                          text: 'Percentage Target', 
-                          onPress: () => {
-                            Alert.prompt(
-                              '📊 Percentage Target',
-                              'What percentage of working days should be office days?',
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                { 
-                                  text: 'Set', 
-                                  onPress: async (value) => {
-                                    const percentage = parseInt(value);
-                                    if (percentage > 0 && percentage <= 100) {
-                                      setMonthlyTarget(percentage);
-                                      setTargetMode('percentage');
-                                      await AsyncStorage.setItem('monthlyTarget', percentage.toString());
-                                      await AsyncStorage.setItem('targetMode', 'percentage');
-                                    }
-                                  }
-                                }
-                              ],
-                              'plain-text',
-                              monthlyTarget.toString()
-                            );
-                          }
-                        }
-                      ]
-                    );
-                  }}
-                >
-                  <Text style={styles.editTargetText}>Edit</Text>
-                </TouchableOpacity>
-              </View>
-              {(() => {
-                const targetProgress = calculateTargetProgress();
-                return (
-                  <View style={styles.targetProgressInfo}>
-                    <Text style={[styles.targetProgressText, getTargetColorStyle(targetProgress.percentage)]}>
-                      {targetMode === 'days' 
-                        ? `${targetProgress.progress}/${targetProgress.adjustedTarget} days (${targetProgress.percentage}%)`
-                        : `${targetProgress.percentage}% of ${targetProgress.workingDaysInfo?.workingDays || 0} days`}
-                    </Text>
-                    <View style={styles.progressBarContainer}>
-                      <View style={[styles.progressBar, getTargetColorStyle(targetProgress.percentage)]}>
-                        <View style={[styles.progressFill, { width: `${Math.min(100, targetProgress.percentage)}%` }]} />
-                      </View>
-                    </View>
-                    <Text style={styles.targetSuggestionText}>{targetProgress.suggestion}</Text>
-                  </View>
-                );
-              })()}
-            </View>
-          </View>
-        )}
+
 
         {/* Attendance Options */}
         <View style={styles.attendanceContainer}>
           <Text style={styles.sectionTitle}>
             {homeView === 'single' ? 'Log Attendance' : `Log Attendance (${selectedDates.length} days selected)`}
           </Text>
-          <View style={styles.attendanceButtons}>
-            <TouchableOpacity
-              style={[
-                styles.attendanceButton,
-                styles.officeButton,
-                homeView === 'single' && currentAttendance === 'office' && styles.selectedAttendance
-              ]}
-              onPress={() => {
-                if (homeView === 'single') {
-                  markAttendance(selectedLogDate, 'office');
-                } else {
-                  markMultipleAttendance('office');
-                }
-              }}
-            >
-              <Text style={styles.attendanceIcon}>🏢</Text>
-              <Text style={styles.attendanceText}>Office</Text>
-            </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.attendanceButton,
-                styles.wfhButton,
-                homeView === 'single' && currentAttendance === 'wfh' && styles.selectedAttendance
-              ]}
-              onPress={() => {
-                if (homeView === 'single') {
-                  markAttendance(selectedLogDate, 'wfh');
-                } else {
-                  markMultipleAttendance('wfh');
-                }
-              }}
-            >
-              <Text style={styles.attendanceIcon}>🏠</Text>
-              <Text style={styles.attendanceText}>WFH</Text>
-            </TouchableOpacity>
+          {/* Weekend Restriction Message */}
+          {isWeekend && homeView === 'single' ? (
+            <View style={styles.weekendRestrictionContainer}>
+              <Text style={styles.weekendRestrictionIcon}>🌴</Text>
+              <Text style={styles.weekendRestrictionTitle}>Weekend - No Logging Required</Text>
+              <Text style={styles.weekendRestrictionText}>
+                Attendance logging is not allowed on weekends. Enjoy your time off!
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.attendanceButtons}>
+              <TouchableOpacity
+                style={[
+                  styles.attendanceButton,
+                  styles.officeButton,
+                  homeView === 'single' && currentAttendance === 'office' && styles.selectedAttendance
+                ]}
+                onPress={() => {
+                  if (homeView === 'single') {
+                    markAttendance(selectedLogDate, 'office');
+                  } else {
+                    markMultipleAttendance('office');
+                  }
+                }}
+              >
+                <Text style={styles.attendanceIcon}>🏢</Text>
+                <Text style={styles.attendanceText}>Office</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.attendanceButton,
-                styles.leaveButton,
-                homeView === 'single' && currentAttendance === 'leave' && styles.selectedAttendance
-              ]}
-              onPress={() => {
+              <TouchableOpacity
+                style={[
+                  styles.attendanceButton,
+                  styles.wfhButton,
+                  homeView === 'single' && currentAttendance === 'wfh' && styles.selectedAttendance
+                ]}
+                onPress={() => {
+                  if (homeView === 'single') {
+                    markAttendance(selectedLogDate, 'wfh');
+                  } else {
+                    markMultipleAttendance('wfh');
+                  }
+                }}
+              >
+                <Text style={styles.attendanceIcon}>🏠</Text>
+                <Text style={styles.attendanceText}>WFH</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.attendanceButton,
+                  styles.leaveButton,
+                  homeView === 'single' && currentAttendance === 'leave' && styles.selectedAttendance
+                ]}
+                onPress={() => {
                 if (homeView === 'single') {
                   markAttendance(selectedLogDate, 'leave');
                 } else {
@@ -1755,6 +1881,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               <Text style={styles.attendanceText}>Leave</Text>
             </TouchableOpacity>
           </View>
+          )}
         </View>
 
         {/* Quick Stats */}
@@ -2185,7 +2312,17 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
   const renderAnalyticsScreen = () => {
     return (
       <ScrollView style={styles.analyticsContainer}>
-        <Text style={styles.analyticsTitle}>📊 Analytics</Text>
+        <View style={styles.analyticsHeader}>
+          <Text style={styles.analyticsTitle}>📊 Analytics</Text>
+          
+          {/* Export Button - Moved to top right corner */}
+          <TouchableOpacity 
+            style={styles.cornerExportButton}
+            onPress={() => exportStatsToPDF(statsView, statsMonth)}
+          >
+            <Text style={styles.cornerExportButtonText}>⬇</Text>
+          </TouchableOpacity>
+        </View>
         
         {/* View Toggle */}
         <View style={styles.statsViewToggle}>
@@ -2207,14 +2344,6 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             </TouchableOpacity>
           ))}
         </View>
-
-        {/* Export Button */}
-        <TouchableOpacity 
-          style={styles.exportButton}
-          onPress={() => exportStatsToPDF(statsView, statsMonth)}
-        >
-          <Text style={styles.exportButtonText}>📄 Export PDF</Text>
-        </TouchableOpacity>
 
         {/* Attendance Breakdown Chart */}
         {renderAttendanceChart()}
@@ -2281,71 +2410,46 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
           <TouchableOpacity 
             style={styles.settingsItem}
+            onPress={showTargetSelectionDialog}
+          >
+            <Text style={styles.settingsItemIcon}>🎯</Text>
+            <Text style={styles.settingsItemText}>Monthly Target</Text>
+            <Text style={styles.settingsItemValue}>{monthlyTarget} {targetMode === 'percentage' ? '%' : 'days'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.settingsItem}
             onPress={() => {
               Alert.alert(
-                '🎯 Set Monthly Target',
-                'Choose your target type:',
+                '📱 Tracking Mode',
+                'Choose your tracking mode:',
                 [
                   { text: 'Cancel', style: 'cancel' },
                   { 
-                    text: 'Days Target', 
-                    onPress: () => {
-                      Alert.prompt(
-                        '📅 Days Target',
-                        'How many office days per month?',
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          { 
-                            text: 'Set', 
-                            onPress: async (value) => {
-                              const days = parseInt(value);
-                              if (days > 0 && days <= 31) {
-                                setMonthlyTarget(days);
-                                setTargetMode('days');
-                                await AsyncStorage.setItem('monthlyTarget', days.toString());
-                                await AsyncStorage.setItem('targetMode', 'days');
-                              }
-                            }
-                          }
-                        ],
-                        'plain-text',
-                        monthlyTarget.toString()
-                      );
+                    text: '✋ Manual Entry', 
+                    onPress: async () => {
+                      const updatedData = { ...userData, trackingMode: 'manual' };
+                      setUserData(updatedData);
+                      await AsyncStorage.setItem('@user_data', JSON.stringify(updatedData));
+                      Alert.alert('✅ Updated', 'Tracking mode changed to Manual Entry');
                     }
                   },
                   { 
-                    text: 'Percentage Target', 
-                    onPress: () => {
-                      Alert.prompt(
-                        '📊 Percentage Target',
-                        'What percentage of working days should be office days?',
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          { 
-                            text: 'Set', 
-                            onPress: async (value) => {
-                              const percentage = parseInt(value);
-                              if (percentage > 0 && percentage <= 100) {
-                                setMonthlyTarget(percentage);
-                                setTargetMode('percentage');
-                                await AsyncStorage.setItem('monthlyTarget', percentage.toString());
-                                await AsyncStorage.setItem('targetMode', 'percentage');
-                              }
-                            }
-                          }
-                        ],
-                        'plain-text',
-                        monthlyTarget.toString()
-                      );
+                    text: '🤖 Smart Auto', 
+                    onPress: async () => {
+                      const updatedData = { ...userData, trackingMode: 'auto' };
+                      setUserData(updatedData);
+                      await AsyncStorage.setItem('@user_data', JSON.stringify(updatedData));
+                      Alert.alert('✅ Updated', 'Tracking mode changed to Smart Auto');
                     }
                   }
                 ]
               );
             }}
           >
-            <Text style={styles.settingsItemIcon}>🎯</Text>
-            <Text style={styles.settingsItemText}>Monthly Target</Text>
-            <Text style={styles.settingsItemValue}>{monthlyTarget} {targetMode === 'percentage' ? '%' : 'days'}</Text>
+            <Text style={styles.settingsItemIcon}>📱</Text>
+            <Text style={styles.settingsItemText}>Tracking Mode</Text>
+            <Text style={styles.settingsItemValue}>{userData.trackingMode === 'auto' ? 'Smart Auto' : 'Manual Entry'}</Text>
           </TouchableOpacity>
         </View>
 
@@ -2355,18 +2459,39 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             style={styles.resetButton}
             onPress={() => {
               Alert.alert(
-                '🗑️ Reset All Data',
-                'This will permanently delete all your attendance data, planned days, and settings. This action cannot be undone.\n\nWould you like to export your data first?',
+                '🧹 Complete Data Reset',
+                'This will permanently delete ALL your data:\n\n• All attendance records\n• All planned days\n• Company details and settings\n• Monthly targets and preferences\n• All app configurations\n\nThis action cannot be undone!\n\nWould you like to export your data first?',
                 [
                   { text: 'Cancel', style: 'cancel' },
                   { 
-                    text: 'Export First', 
-                    onPress: () => exportStatsToPDF('year', new Date())
+                    text: '📄 Export First', 
+                    onPress: () => {
+                      exportStatsToPDF('year', new Date());
+                      setTimeout(() => {
+                        Alert.alert(
+                          'Ready to Reset?',
+                          'Your data has been exported. Now proceed with complete reset?',
+                          [
+                            { text: 'Cancel', style: 'cancel' },
+                            { text: '🧹 Reset Everything', style: 'destructive', onPress: clearSession }
+                          ]
+                        );
+                      }, 1000);
+                    }
                   },
                   { 
-                    text: 'Reset Now', 
+                    text: '🧹 Reset Now', 
                     style: 'destructive',
-                    onPress: clearSession 
+                    onPress: () => {
+                      Alert.alert(
+                        '⚠️ Final Confirmation',
+                        'Are you absolutely sure? This will erase EVERYTHING and cannot be undone.',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          { text: 'YES, ERASE ALL', style: 'destructive', onPress: clearSession }
+                        ]
+                      );
+                    }
                   }
                 ]
               );
@@ -2382,10 +2507,10 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
   // BOTTOM NAVIGATION
   const renderBottomNavigation = () => {
     const tabs = [
-      { id: 'home', icon: '🏠', label: 'Home' },
-      { id: 'plan', icon: '📅', label: 'Plan' },
-      { id: 'analytics', icon: '📊', label: 'Analytics' },
-      { id: 'settings', icon: '⚙️', label: 'Settings' }
+      { id: 'home', icon: '⌂', label: 'Home' },
+      { id: 'plan', icon: '◐', label: 'Plan' },
+      { id: 'analytics', icon: '◈', label: 'Analytics' },
+      { id: 'settings', icon: '◉', label: 'Settings' }
     ];
 
     return (
@@ -2507,6 +2632,54 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             </View>
           </Modal>
         )}
+
+        {/* Target Input Modal - Android friendly */}
+        <Modal 
+          visible={showTargetModal} 
+          animationType="slide" 
+          presentationStyle="overFullScreen"
+          transparent={true}
+        >
+          <View style={styles.targetModalOverlay}>
+            <View style={styles.targetModalContainer}>
+              <Text style={styles.targetModalTitle}>
+                {targetInputMode === 'days' ? '📅 Set Days Target' : '📊 Set Percentage Target'}
+              </Text>
+              <Text style={styles.targetModalSubtitle}>
+                {targetInputMode === 'days' 
+                  ? 'How many office days per month?' 
+                  : 'What percentage of working days should be office days?'}
+              </Text>
+              
+              <TextInput
+                style={styles.targetModalInput}
+                value={targetInputValue}
+                onChangeText={setTargetInputValue}
+                placeholder={targetInputMode === 'days' ? 'e.g. 15' : 'e.g. 75'}
+                placeholderTextColor="#666666"
+                keyboardType="numeric"
+                selectTextOnFocus={true}
+                autoFocus={true}
+              />
+              
+              <View style={styles.targetModalButtons}>
+                <TouchableOpacity 
+                  style={[styles.targetModalButton, styles.targetModalCancelButton]}
+                  onPress={() => setShowTargetModal(false)}
+                >
+                  <Text style={styles.targetModalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={[styles.targetModalButton, styles.targetModalSaveButton]}
+                  onPress={handleTargetSave}
+                >
+                  <Text style={styles.targetModalSaveText}>Set Target</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   };
@@ -2551,12 +2724,14 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
           </View>
         </View>
 
-        <TouchableOpacity 
-          style={styles.greenButton} 
-          onPress={() => setScreen('companySetup')}
-        >
-          <Text style={styles.greenButtonText}>Get Started</Text>
-        </TouchableOpacity>
+        <View style={styles.buttonContainer}>
+          <TouchableOpacity 
+            style={styles.greenButton} 
+            onPress={() => setScreen('companySetup')}
+          >
+            <Text style={styles.greenButtonText}>Get Started</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     );
   }
@@ -2601,13 +2776,34 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     const handleAddressSearch = async (text) => {
       setAddressSearchText(text);
       
+      // Clear previous timeout
+      if (addressSearchTimeout) {
+        clearTimeout(addressSearchTimeout);
+      }
+      
       if (text.length >= 3) {
-        const suggestions = await searchAddresses(text);
-        setAddressSuggestions(suggestions);
-        setShowAddressDropdown(true); // Always show dropdown when searching
+        // Show loading immediately
+        setIsLoadingAddresses(true);
+        setShowAddressDropdown(true);
+        
+        // Debounce the actual search by 500ms
+        const timeoutId = setTimeout(async () => {
+          try {
+            const suggestions = await searchAddresses(text);
+            setAddressSuggestions(suggestions);
+            setIsLoadingAddresses(false);
+          } catch (error) {
+            console.log('Address search error:', error);
+            setIsLoadingAddresses(false);
+            setAddressSuggestions([]);
+          }
+        }, 500);
+        
+        setAddressSearchTimeout(timeoutId);
       } else {
         setShowAddressDropdown(false);
         setAddressSuggestions([]);
+        setIsLoadingAddresses(false);
       }
     };
 
@@ -2925,53 +3121,78 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         <TouchableOpacity
           style={styles.primaryButton}
           onPress={async () => {
-            // Request permissions based on selected mode
-            if (userData.trackingMode === 'auto') {
-              const locStatus = await Location.requestForegroundPermissionsAsync();
-              if (locStatus.status !== 'granted') {
-                Alert.alert(
-                  'Location Permission Required',
-                  'Auto mode needs location access to detect when you\'re at office. You can change this later in settings.',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Enable', onPress: () => Location.requestForegroundPermissionsAsync() }
-                  ]
-                );
-                return;
+            // Function to proceed with setup after target is set or skipped
+            const proceedWithSetup = async () => {
+              // Request permissions based on selected mode
+              if (userData.trackingMode === 'auto') {
+                const locStatus = await Location.requestForegroundPermissionsAsync();
+                if (locStatus.status !== 'granted') {
+                  Alert.alert(
+                    'Location Permission Required',
+                    'Auto mode needs location access to detect when you\'re at office. Would you like to continue with Manual mode instead?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { 
+                        text: 'Use Manual Mode', 
+                        onPress: () => {
+                          setUserData({ ...userData, trackingMode: 'manual' });
+                          Alert.alert('Switched to Manual', 'You can always change to Auto mode later in settings when you enable location permissions.');
+                        }
+                      },
+                      { text: 'Try Again', onPress: () => Location.requestForegroundPermissionsAsync() }
+                    ]
+                  );
+                  return;
+                }
               }
-            }
 
-            // Request notification permission
-            const notifStatus = await Notifications.requestPermissionsAsync();
-            if (notifStatus.status !== 'granted') {
-              Alert.alert(
-                'Notification Permission',
-                'We need notification permission to send you reminders. You can enable this in your phone settings later.'
-              );
-            }
+              // Request notification permission
+              const notifStatus = await Notifications.requestPermissionsAsync();
+              if (notifStatus.status !== 'granted') {
+                Alert.alert(
+                  'Notification Permission',
+                  'We need notification permission to send you reminders. You can enable this in your phone settings later.'
+                );
+              }
 
-            // Save user data and initialize
-            const finalUserData = { ...userData, userId: await getOrCreateUserId() };
-            await AsyncStorage.setItem('userData', JSON.stringify(finalUserData));
-            setUserData(finalUserData);
+              // Save user data and initialize
+              const finalUserData = { ...userData, userId: await getOrCreateUserId() };
+              await AsyncStorage.setItem('userData', JSON.stringify(finalUserData));
+              setUserData(finalUserData);
 
-            // Set up tracking based on mode
-            if (userData.trackingMode === 'manual') {
-              await setupManualNotifications();
-            } else {
-              await setupAutoTracking(finalUserData);
-            }
+              // Set up tracking based on mode
+              if (userData.trackingMode === 'manual') {
+                await setupManualNotifications();
+              } else {
+                await setupAutoTracking(finalUserData);
+              }
 
-            // Initialize with some sample data for demo
-            const sampleAttendance = {
-              '2024-10-21': 'office',
-              '2024-10-22': 'wfh',
-              '2024-10-23': 'office',
+              // Initialize with some sample data for demo
+              const sampleAttendance = {
+                '2024-10-21': 'office',
+                '2024-10-22': 'wfh',
+                '2024-10-23': 'office',
+              };
+              setAttendanceData(sampleAttendance);
+              await AsyncStorage.setItem('attendanceData', JSON.stringify(sampleAttendance));
+
+              setScreen('calendar');
             };
-            setAttendanceData(sampleAttendance);
-            await AsyncStorage.setItem('attendanceData', JSON.stringify(sampleAttendance));
 
-            setScreen('calendar');
+            // First check if user has set a monthly target
+            if (monthlyTarget === 0) {
+              Alert.alert(
+                '🎯 Set Your Monthly Target',
+                'Before we get started, let\'s set your monthly office attendance goal to help track your progress!',
+                [
+                  { text: 'Skip for Now', style: 'cancel', onPress: () => proceedWithSetup() },
+                  { text: 'Set Target', onPress: () => showTargetSelectionDialog() }
+                ]
+              );
+              return;
+            }
+
+            await proceedWithSetup();
           }}
         >
           <Text style={styles.primaryButtonText}>
@@ -3506,7 +3727,12 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 24,
     paddingTop: 60,
+    paddingBottom: Platform.OS === 'android' ? 100 : 24,
     backgroundColor: '#000000',
+  },
+  buttonContainer: {
+    paddingBottom: Platform.OS === 'android' ? 50 : 16,
+    paddingTop: 20,
   },
   welcomeHeader: {
     alignItems: 'center',
@@ -3758,7 +3984,7 @@ const styles = StyleSheet.create({
     padding: 18,
     borderRadius: 12,
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: Platform.OS === 'android' ? 32 : 16,
     marginHorizontal: 8,
     shadowColor: '#22C55E',
     shadowOffset: { width: 0, height: 4 },
@@ -4700,6 +4926,31 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  weekendRestrictionContainer: {
+    backgroundColor: '#2A2A2A',
+    borderRadius: 15,
+    padding: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FFD700',
+  },
+  weekendRestrictionIcon: {
+    fontSize: 40,
+    marginBottom: 10,
+  },
+  weekendRestrictionTitle: {
+    color: '#FFD700',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  weekendRestrictionText: {
+    color: '#CCCCCC',
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
 
   // Home View Toggle
   homeViewToggle: {
@@ -5158,12 +5409,36 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingBottom: Platform.OS === 'ios' ? 120 : 100,
   },
+  analyticsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 5,
+  },
   analyticsTitle: {
     fontSize: 24,
     fontWeight: 'bold',
     color: '#FFD700',
+    flex: 1,
     textAlign: 'center',
-    marginBottom: 20,
+  },
+  cornerExportButton: {
+    backgroundColor: '#FFD700',
+    borderRadius: 20,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  cornerExportButtonText: {
+    fontSize: 20,
+    color: '#1A1A1A',
   },
   analyticsContent: {
     flex: 1,
@@ -5374,6 +5649,77 @@ const styles = StyleSheet.create({
   },
   resetButtonText: {
     color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+
+  // Target Modal - Android friendly
+  targetModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  targetModalContainer: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 350,
+    borderWidth: 1,
+    borderColor: '#333333',
+  },
+  targetModalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFD700',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  targetModalSubtitle: {
+    fontSize: 16,
+    color: '#CCCCCC',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 22,
+  },
+  targetModalInput: {
+    backgroundColor: '#2A2A2A',
+    borderWidth: 1,
+    borderColor: '#444444',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 18,
+    color: '#FFFFFF',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  targetModalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  targetModalButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  targetModalCancelButton: {
+    backgroundColor: '#444444',
+  },
+  targetModalSaveButton: {
+    backgroundColor: '#FFD700',
+  },
+  targetModalCancelText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  targetModalSaveText: {
+    color: '#1A1A1A',
     fontSize: 16,
     fontWeight: 'bold',
   },

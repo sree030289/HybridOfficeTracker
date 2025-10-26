@@ -5,7 +5,6 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "description": "Your simple hybrid work attendance tracker. Track office days, set goals, and get insights about your work patterns.",
-    "privacy": "public",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
@@ -20,7 +19,6 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.officetrack.app",
       "buildNumber": "1",
-      "appStoreUrl": "https://apps.apple.com/app/officetrack/",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to automatically detect when you're at your office and mark your attendance. Location is checked only once per hour to save battery.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We use your location to automatically detect when you're at your office and mark your attendance. Location is checked only once per hour to save battery.",
@@ -39,7 +37,6 @@
       },
       "package": "com.officetrack.app",
       "versionCode": 1,
-      "playStoreUrl": "https://play.google.com/store/apps/details?id=com.officetrack.app",
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
@@ -69,7 +66,8 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Allow OfficeTrack to use your location to automatically detect office attendance."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {
