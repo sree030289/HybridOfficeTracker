@@ -9,12 +9,13 @@ import {
   TouchableOpacity,
   ScrollView,
   TextInput,
+  Dimensions,
   Modal,
   Alert,
   ActivityIndicator,
+  AppState,
   StatusBar as RNStatusBar,
   FlatList,
-  Dimensions,
   Platform,
   Image,
   TouchableWithoutFeedback,
@@ -24,49 +25,339 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
+
+// Debug: Check if Notifications module is available
+console.log('Notifications module loaded:', !!Notifications);
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { moveAsync, documentDirectory, writeAsStringAsync } from 'expo-file-system/legacy';
 
 const { width: screenWidth } = Dimensions.get('window');
 
-// Configure notifications
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
+// Utility function to get proper local date without timezone issues
+const getLocalDate = (dateString = null) => {
+  if (dateString) {
+    // Parse date string as local date to avoid timezone issues
+    const [year, month, day] = dateString.split('-').map(Number);
+    return new Date(year, month - 1, day); // month is 0-indexed
+  }
+  // For current date, use device's local time
+  return new Date();
+};
+
+// Utility function to format date as YYYY-MM-DD string consistently in local timezone
+const getLocalDateString = (date = null) => {
+  const localDate = date || new Date();
+  const year = localDate.getFullYear();
+  const month = String(localDate.getMonth() + 1).padStart(2, '0');
+  const day = String(localDate.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Utility function to get today's date string consistently
+const getTodayString = () => {
+  return getLocalDateString(new Date());
+};
+
+// Utility function to check if a date is weekend in local timezone
+const isWeekendDate = (dateString) => {
+  const date = getLocalDate(dateString);
+  const dayOfWeek = date.getDay();
+  return dayOfWeek === 0 || dayOfWeek === 6; // Sunday = 0, Saturday = 6
+};
+
+// Configure notifications (only on native platforms)
+let isSettingUpNotifications = false;
+
+if (Platform.OS !== 'web') {
+  try {
+    if (Notifications && Notifications.setNotificationHandler) {
+      Notifications.setNotificationHandler({
+        handleNotification: async (notification) => {
+          // Always allow test notifications
+          if (notification.request.content.data?.test === true) {
+            console.log('Allowing test notification');
+            return {
+              shouldShowAlert: true,
+              shouldShowBanner: true,
+              shouldShowList: true,
+              shouldPlaySound: true,
+              shouldSetBadge: false,
+            };
+          }
+          
+          // Skip notifications during initial setup (but not test notifications)
+          if (isSettingUpNotifications && notification.request.content.data?.type === 'manual_reminder') {
+            console.log('Skipping setup notification:', notification.request.content.title);
+            return {
+              shouldShowAlert: false,
+              shouldShowBanner: false,
+              shouldShowList: false,
+              shouldPlaySound: false,
+              shouldSetBadge: false,
+            };
+          }
+          
+          // Check if it's a manual reminder
+          if (notification.request.content.data?.type === 'manual_reminder') {
+            // Only show manual reminders on weekdays
+            const now = new Date();
+            const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+            const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5; // Monday to Friday
+            
+            if (!isWeekday) {
+              console.log('Skipping manual reminder notification on weekend');
+              return {
+                shouldShowAlert: false,
+                shouldShowBanner: false,
+                shouldShowList: false,
+                shouldPlaySound: false,
+                shouldSetBadge: false,
+              };
+            }
+          }
+          
+          return {
+            shouldShowAlert: true,
+            shouldShowBanner: true,
+            shouldShowList: true,
+            shouldPlaySound: true,
+            shouldSetBadge: false,
+          };
+        },
+      });
+    }
+  } catch (error) {
+    console.log('Notification setup error:', error);
+  }
+}
+
+// Test notification function (for debugging)
+const testNotification = async () => {
+  try {
+    // Use scheduleNotificationAsync which should be available
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '🔔 Test Notification',
+        body: 'If you see this, notifications are working!',
+        data: { test: true }
+      },
+      trigger: null, // Show immediately
+    });
+    console.log('Test notification sent successfully via schedule method');
+  } catch (error) {
+    console.log('Test notification failed:', error);
+  }
+};
+
+// Helper function to safely send notifications
+const sendNotification = async (title, body, data = {}) => {
+  if (Platform.OS === 'web') {
+    console.log('Notification skipped on web:', title);
+    return;
+  }
+  
+  try {
+    // Use scheduleNotificationAsync since presentNotificationAsync is undefined
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        data
+      },
+      trigger: null, // Show immediately
+    });
+    console.log('✅ Notification sent successfully:', title);
+  } catch (error) {
+    console.log('❌ Notification failed:', error);
+  }
+};
 
 // Firebase configuration
 const FIREBASE_URL = 'https://officetracker-mvp-default-rtdb.firebaseio.com/';
 
-// Popular companies for dropdown suggestions
-const POPULAR_COMPANIES = [
-  'Accenture', 'Amazon', 'Apple', 'Atlassian', 'Commonwealth Bank',
-  'Deloitte', 'Google', 'IBM', 'Microsoft', 'NAB', 'PwC', 'Telstra',
-  'Westpac', 'Xero', 'ANZ Bank'
-];
-
-
-
-// Public holidays by country (2024-2025)
-const PUBLIC_HOLIDAYS = {
-  australia: [
-    '2024-01-01', '2024-01-26', '2024-03-29', '2024-04-01', '2024-04-25', 
-    '2024-06-10', '2024-12-25', '2024-12-26',
-    '2025-01-01', '2025-01-27', '2025-04-18', '2025-04-21', '2025-04-25',
-    '2025-06-09', '2025-12-25', '2025-12-26'
-  ],
-  india: [
-    '2024-01-26', '2024-08-15', '2024-10-02', '2024-10-24', '2024-11-12',
-    '2025-01-26', '2025-08-15', '2025-10-02', '2025-10-23', '2025-11-01'
-  ],
-  usa: [
-    '2024-01-01', '2024-07-04', '2024-11-28', '2024-12-25',
-    '2025-01-01', '2025-07-04', '2025-11-27', '2025-12-25'
+// Dynamic public holidays and companies based on user's location
+const COUNTRY_DATA = {
+  australia: {
+    name: 'Australia',
+    publicHolidays: [
+      '2024-01-01', '2024-01-26', '2024-03-29', '2024-04-01', '2024-04-25', 
+      '2024-06-10', '2024-12-25', '2024-12-26',
+      '2025-01-01', '2025-01-27', '2025-04-18', '2025-04-21', '2025-04-25',
+      '2025-06-09', '2025-12-25', '2025-12-26'
+    ],
+    popularCompanies: [
+  'Commonwealth Bank of Australia','CBA', 'Westpac Banking Corporation', 'Australia and New Zealand Banking Group','ANZ', 'National Australia Bank','NAB', 'Macquarie Group',
+  'BHP Group', 'Rio Tinto', 'Wesfarmers', 'Woolworths Group', 'Coles Group','NBN',
+  'Telstra Corporation', 'TPG Telecom', 'Optus (SingTel Australia)', 'Qantas Airways', 'Scentre Group',
+  'Goodman Group', 'Transurban Group', 'Mirvac Group', 'Stockland Corporation', 'AMP Limited',
+  'Insurance Australia Group', 'QBE Insurance Group', 'Suncorp Group', 'IAG (Insurance Australia Group)', 'Medibank Private',
+  'Ramsay Health Care', 'CSL Limited', 'Cochlear Limited', 'ResMed Inc.', 'NIB Holdings',
+  'Atlassian Corporation', 'Canva', 'Xero', 'WiseTech Global', 'TechnologyOne',
+  'Iress Limited', 'Appen Limited', 'NEXTDC', 'Afterpay', 'Zip Co',
+  'REA Group', 'Seek Limited', 'Carsales.com.au', 'Envato', 'SafetyCulture',
+  'Culture Amp', 'Airwallex', 'Deputy Group', 'Pin Payments', 'Customer Holdings (Australia)',
+  'Infomedia Ltd', 'Ansarada', 'Elmo Software', 'Harrison.ai', 'Pro Medicus',
+  'Bitdefender Australia', 'Cohesity Australia', 'Redbubble', 'BoxTree Systems', 'Geeks2U',
+  'Microsoft Australia', 'IBM Australia', 'Accenture Australia', 'Capgemini Australia', 'Deloitte Digital Australia',
+  'PwC Australia', 'EY Australia', 'KPMG Australia', 'SAP Australia', 'Oracle Australia',
+  'Salesforce Australia', 'ServiceNow Australia', 'Workday Australia', 'VMware Australia', 'Telstra Purple',
+  'DXC Technology Australia', 'JB Hi-Fi', 'Harvey Norman', 'Bendigo and Adelaide Bank', 'Bank of Queensland',
+  'Medibank (again for emphasis)', 'Newcrest Mining', 'South32', 'BlueScope Steel', 'Santos Limited',
+  'Aurizon Holdings', 'Fortescue Metals Group', 'Woodside Energy Group', 'Origin Energy', 'Ampol Limited',
+  'Seven Group Holdings', 'Brambles Limited', 'Metcash Limited', 'CBH Group', 'Flight Centre Travel Group',
+  'Nine Entertainment Co.', 'Lottery Corporation (The)', 'ARS-Group (Australia)', 'A2 Milk Company', 'Aristocrat Leisure',
+  'Bendigo Bank', 'Bank of Queensland']
+  },
+  india: {
+    name: 'India',
+    publicHolidays: [
+      '2024-01-26', '2024-08-15', '2024-10-02', '2024-10-24', '2024-11-12',
+      '2025-01-26', '2025-08-15', '2025-10-02', '2025-10-23', '2025-11-01'
+    ],
+    popularCompanies: [
+    'Reliance Industries', 'Tata Consultancy Services (TCS)', 'Infosys', 'HDFC Bank', 'ICICI Bank',
+    'State Bank of India', 'Bharti Airtel', 'Hindustan Unilever', 'ITC Limited', 'Wipro',
+    'Larsen & Toubro (L&T)', 'Adani Enterprises', 'Adani Ports', 'Adani Green Energy', 'Adani Power',
+    'Axis Bank', 'Kotak Mahindra Bank', 'Bajaj Finance', 'HCL Technologies', 'Maruti Suzuki',
+    'Mahindra & Mahindra', 'Tata Motors', 'Tata Steel', 'JSW Steel', 'UltraTech Cement',
+    'Sun Pharma', 'Dr. Reddy’s Laboratories', 'Cipla', 'Nestlé India', 'Britannia Industries',
+    'Godrej Consumer Products', 'Asian Paints', 'Eicher Motors', 'Hero MotoCorp', 'Hindalco',
+    'Coal India', 'ONGC', 'NTPC', 'Power Grid Corporation', 'IndusInd Bank',
+    'Zomato', 'Paytm', 'Byju’s', 'Swiggy', 'PhonePe',
+    'Flipkart', 'Ola Cabs', 'MakeMyTrip', 'Delhivery', 'Nykaa','Infosys','Wipro','TCS','Accenture','CTS','CAPGemini'
   ]
+  },
+  usa: {
+    name: 'United States',
+    publicHolidays: [
+      '2024-01-01', '2024-07-04', '2024-11-28', '2024-12-25',
+      '2025-01-01', '2025-07-04', '2025-11-27', '2025-12-25'
+    ],
+    popularCompanies: [
+    'Apple', 'Microsoft', 'Amazon', 'Google (Alphabet)', 'Meta (Facebook)',
+    'Tesla', 'Berkshire Hathaway', 'JPMorgan Chase', 'Walmart', 'ExxonMobil',
+    'Johnson & Johnson', 'Procter & Gamble', 'Visa', 'Mastercard', 'Pfizer',
+    'Coca-Cola', 'PepsiCo', 'Intel', 'IBM', 'Netflix',
+    'Nike', 'Disney', 'Oracle', 'Salesforce', 'Adobe',
+    'Comcast', 'Cisco', 'Qualcomm', 'Uber', 'Airbnb',
+    'Ford', 'General Motors', 'Boeing', 'Lockheed Martin', 'Goldman Sachs',
+    'Morgan Stanley', 'American Express', 'Chevron', 'AT&T', 'Verizon',
+    '3M', 'Dell', 'HP', 'Starbucks', 'Costco',
+    'Home Depot', 'CVS Health', 'AbbVie', 'Caterpillar', 'PayPal'
+  ]
+  },
+  uk: {
+    name: 'United Kingdom',
+    publicHolidays: [
+      '2024-01-01', '2024-03-29', '2024-04-01', '2024-05-06', '2024-05-27',
+      '2024-08-26', '2024-12-25', '2024-12-26',
+      '2025-01-01', '2025-04-18', '2025-04-21', '2025-05-05', '2025-05-26',
+      '2025-08-25', '2025-12-25', '2025-12-26'
+    ],
+    popularCompanies: [
+    'BP', 'Shell', 'HSBC', 'Barclays', 'Lloyds Banking Group',
+    'NatWest Group', 'Tesco', 'Unilever', 'AstraZeneca', 'GSK',
+    'British American Tobacco', 'Vodafone', 'BT Group', 'Rolls-Royce', 'BAE Systems',
+    'Prudential', 'Aviva', 'Diageo', 'Reckitt Benckiser', 'Glencore',
+    'Rio Tinto', 'Anglo American', 'Imperial Brands', 'Experian', 'WPP',
+    'Next', 'Marks & Spencer', 'Sainsbury’s', 'Morrisons', 'Burberry',
+    'Associated British Foods', 'easyJet', 'British Airways (IAG)', 'Tesco Bank', 'Legal & General',
+    'Schroders', 'HSBC UK', 'Barclaycard', 'Nationwide', 'Standard Chartered',
+    'RELX', 'Smith & Nephew', 'BAE Systems Maritime', 'Bunzl', 'SEGRO',
+    'Ocado', 'Persimmon', 'Taylor Wimpey', 'Kingfisher', 'ARM Holdings'
+  ]
+  },
+  canada: {
+    name: 'Canada',
+    publicHolidays: [
+      '2024-01-01', '2024-07-01', '2024-09-02', '2024-10-14', '2024-12-25',
+      '2025-01-01', '2025-07-01', '2025-09-01', '2025-10-13', '2025-12-25'
+    ],
+    popularCompanies: [
+    'Royal Bank of Canada', 'Toronto-Dominion Bank', 'Bank of Nova Scotia', 'Bank of Montreal', 'Canadian Imperial Bank of Commerce',
+    'Brookfield Corporation', 'Shopify', 'Enbridge', 'Suncor Energy', 'Canadian Natural Resources',
+    'Manulife Financial', 'Sun Life Financial', 'BCE (Bell Canada)', 'Rogers Communications', 'Telus',
+    'Thomson Reuters', 'Magna International', 'Loblaw Companies', 'George Weston', 'CN (Canadian National Railway)',
+    'CPKC (Canadian Pacific Kansas City)', 'Bombardier', 'CAE', 'Nutrien', 'TC Energy',
+    'Power Corporation', 'Great-West Lifeco', 'Alimentation Couche-Tard', 'Dollarama', 'OpenText',
+    'Intact Financial', 'Cenovus Energy', 'Teck Resources', 'Barrick Gold', 'Agnico Eagle Mines',
+    'Hydro One', 'Fortis', 'CGI Inc.', 'Imperial Oil', 'Husky Energy',
+    'Cameco', 'First Quantum Minerals', 'Air Canada', 'WestJet', 'Canfor',
+    'Maple Leaf Foods', 'Fairfax Financial', 'Manitoba Hydro', 'Petro-Canada', 'Aurora Cannabis'
+  ]
+  }
+};
+
+// Backward compatibility - will be replaced with dynamic data
+const PUBLIC_HOLIDAYS = {
+  australia: COUNTRY_DATA.australia.publicHolidays,
+  india: COUNTRY_DATA.india.publicHolidays,
+  usa: COUNTRY_DATA.usa.publicHolidays,
+  uk: COUNTRY_DATA.uk.publicHolidays,
+  canada: COUNTRY_DATA.canada.publicHolidays
+};
+
+// Country code mapping for Nager.Date API
+const COUNTRY_CODE_MAPPING = {
+  australia: 'AU',
+  india: 'IN',
+  usa: 'US',
+  uk: 'GB',
+  canada: 'CA'
+};
+
+// Dynamic popular companies based on location
+const getPopularCompanies = (country = 'australia') => {
+  return COUNTRY_DATA[country]?.popularCompanies || COUNTRY_DATA.australia.popularCompanies;
+};
+
+// Dynamic public holidays fetching from Nager.Date API
+const fetchPublicHolidays = async (country = 'australia', year = new Date().getFullYear()) => {
+  const countryCode = COUNTRY_CODE_MAPPING[country] || 'AU';
+  
+  try {
+    console.log(`Fetching holidays for ${country} (${countryCode}) year ${year}`);
+    const response = await fetch(`https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`);
+    
+    if (response.ok) {
+      const holidays = await response.json();
+      // Extract dates and names for 'Public' type holidays
+      const holidayData = holidays
+        .filter(holiday => holiday.types && holiday.types.includes('Public'))
+        .reduce((acc, holiday) => {
+          acc[holiday.date] = holiday.name;
+          return acc;
+        }, {});
+      
+      console.log(`Fetched ${Object.keys(holidayData).length} public holidays for ${country} ${year}`);
+      return holidayData;
+    } else {
+      console.warn(`Failed to fetch holidays for ${country}: ${response.status}`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`Error fetching holidays for ${country}:`, error);
+    return null;
+  }
+};
+
+// Cache key for holidays
+const getHolidayCacheKey = (country, year) => `${country}_${year}`;
+
+// Check if cached holidays are still valid (updated within last 30 days)
+const isCacheValid = (country, year, holidayLastUpdated) => {
+  const cacheKey = getHolidayCacheKey(country, year);
+  const lastUpdate = holidayLastUpdated[cacheKey];
+  if (!lastUpdate) return false;
+  
+  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  return lastUpdate > thirtyDaysAgo;
+};
+
+// Static fallback function for when dynamic data isn't available
+const getStaticPublicHolidays = (country = 'australia') => {
+  return COUNTRY_DATA[country]?.publicHolidays || COUNTRY_DATA.australia.publicHolidays;
 };
 
 export default function App() {
@@ -94,7 +385,7 @@ export default function App() {
   const [selectedDates, setSelectedDates] = useState([]); // For multi-select
   const [currentWeek, setCurrentWeek] = useState(new Date()); // For weekly navigation
   const [activeTab, setActiveTab] = useState('home'); // 'home', 'plan', 'analytics', 'settings'
-  const [selectedLogDate, setSelectedLogDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedLogDate, setSelectedLogDate] = useState(() => getTodayString());
   const [showPlanner, setShowPlanner] = useState(false);
   const [plannerMonth, setPlannerMonth] = useState(new Date());
   const [isSelecting, setIsSelecting] = useState(false);
@@ -103,7 +394,9 @@ export default function App() {
   const [targetInputMode, setTargetInputMode] = useState(''); // 'days' or 'percentage'
   const [targetInputValue, setTargetInputValue] = useState('');
   const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [homeCalendarMonth, setHomeCalendarMonth] = useState(new Date());
   const [locationCheckInterval, setLocationCheckInterval] = useState(null);
+  const [dataLoaded, setDataLoaded] = useState(false);
   const [companySearchText, setCompanySearchText] = useState('');
   const [showCompanyDropdown, setShowCompanyDropdown] = useState(false);
   const [companySuggestions, setCompanySuggestions] = useState([]);
@@ -114,7 +407,117 @@ export default function App() {
   const [isLoadingCompanies, setIsLoadingCompanies] = useState(false);
   const [isLoadingAddresses, setIsLoadingAddresses] = useState(false);
   const [addressSearchTimeout, setAddressSearchTimeout] = useState(null);
+  
+  // Holiday caching state
+  const [cachedHolidays, setCachedHolidays] = useState({}); // {country_year: [dates]}
+  const [holidayLastUpdated, setHolidayLastUpdated] = useState({}); // {country_year: timestamp}
+  const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
 
+
+
+  // Load cached holidays from storage
+  const loadCachedHolidays = async () => {
+    try {
+      const cached = await AsyncStorage.getItem('cachedHolidays');
+      const timestamps = await AsyncStorage.getItem('holidayLastUpdated');
+      
+      if (cached) setCachedHolidays(JSON.parse(cached));
+      if (timestamps) setHolidayLastUpdated(JSON.parse(timestamps));
+    } catch (error) {
+      console.error('Error loading cached holidays:', error);
+    }
+  };
+
+  // Save holidays to cache and storage
+  const saveCachedHolidays = async (newCachedHolidays, newTimestamps) => {
+    try {
+      setCachedHolidays(newCachedHolidays);
+      setHolidayLastUpdated(newTimestamps);
+      
+      await AsyncStorage.setItem('cachedHolidays', JSON.stringify(newCachedHolidays));
+      await AsyncStorage.setItem('holidayLastUpdated', JSON.stringify(newTimestamps));
+    } catch (error) {
+      console.error('Error saving cached holidays:', error);
+    }
+  };
+
+  // Update holidays for a specific country and year
+  const updateHolidaysForCountry = async (country, year) => {
+    const cacheKey = getHolidayCacheKey(country, year);
+    
+    // Skip if already updated recently
+    if (isCacheValid(country, year, holidayLastUpdated)) {
+      console.log(`Holidays for ${country} ${year} are already up to date`);
+      return;
+    }
+
+    console.log(`Updating holidays for ${country} ${year}...`);
+    setIsLoadingHolidays(true);
+
+    const newHolidays = await fetchPublicHolidays(country, year);
+    
+    if (newHolidays) {
+      const newCachedHolidays = { ...cachedHolidays, [cacheKey]: newHolidays };
+      const newTimestamps = { ...holidayLastUpdated, [cacheKey]: Date.now() };
+      
+      await saveCachedHolidays(newCachedHolidays, newTimestamps);
+      console.log(`Successfully updated holidays for ${country} ${year}`);
+      
+      // Show success message only for manual updates (not automatic ones)
+      if (country === userData.country) {
+        const countryName = COUNTRY_DATA[country]?.name || country;
+        const count = Array.isArray(newHolidays) ? newHolidays.length : Object.keys(newHolidays).length;
+        console.log(`✅ Updated ${count} public holidays for ${countryName} ${year}`);
+      }
+    } else {
+      console.warn(`Failed to update holidays for ${country} ${year}, using static data`);
+    }
+    
+    setIsLoadingHolidays(false);
+  };
+
+  // Update holidays for current and next year
+  const updateCurrentYearHolidays = async (country) => {
+    const currentYear = new Date().getFullYear();
+    const nextYear = currentYear + 1;
+    
+    // Update both current and next year holidays
+    await Promise.all([
+      updateHolidaysForCountry(country, currentYear),
+      updateHolidaysForCountry(country, nextYear)
+    ]);
+  };
+
+  // Get public holidays with caching (component version that can access state)
+  const getPublicHolidays = (country = 'australia', year = new Date().getFullYear()) => {
+    const cacheKey = getHolidayCacheKey(country, year);
+    
+    // Return cached holidays if available and valid
+    if (cachedHolidays[cacheKey] && isCacheValid(country, year, holidayLastUpdated)) {
+      const cached = cachedHolidays[cacheKey];
+      // Handle both object format (new) and array format (old)
+      return Array.isArray(cached) ? cached : Object.keys(cached);
+    }
+    
+    // Return static fallback data while loading new data
+    return getStaticPublicHolidays(country);
+  };
+
+  // Get holiday name for a specific date
+  const getHolidayName = (dateStr, country = 'australia', year = new Date().getFullYear()) => {
+    const cacheKey = getHolidayCacheKey(country, year);
+    
+    // Check cached holidays for name
+    if (cachedHolidays[cacheKey] && isCacheValid(country, year, holidayLastUpdated)) {
+      const cached = cachedHolidays[cacheKey];
+      if (!Array.isArray(cached) && cached[dateStr]) {
+        return cached[dateStr];
+      }
+    }
+    
+    // Fallback to generic "Public Holiday" for static data
+    return 'Public Holiday';
+  };
 
   useEffect(() => {
     initializeApp();
@@ -125,6 +528,38 @@ export default function App() {
       }
     };
   }, []);
+
+  // Monitor year changes and update holidays
+  useEffect(() => {
+    const checkYearChange = () => {
+      const currentYear = new Date().getFullYear();
+      const storedYear = AsyncStorage.getItem('lastHolidayYear');
+      
+      if (storedYear && parseInt(storedYear) !== currentYear) {
+        console.log('Year changed, updating holidays...');
+        if (userData.country) {
+          updateCurrentYearHolidays(userData.country);
+        }
+        AsyncStorage.setItem('lastHolidayYear', currentYear.toString());
+      } else if (!storedYear) {
+        AsyncStorage.setItem('lastHolidayYear', currentYear.toString());
+      }
+    };
+
+    // Check immediately and set up interval
+    checkYearChange();
+    const yearCheckInterval = setInterval(checkYearChange, 24 * 60 * 60 * 1000); // Check daily
+
+    return () => clearInterval(yearCheckInterval);
+  }, [userData.country]);
+
+  // Update holidays when user's country changes
+  useEffect(() => {
+    if (userData.country) {
+      console.log(`Country changed to ${userData.country}, updating holidays...`);
+      updateCurrentYearHolidays(userData.country);
+    }
+  }, [userData.country]);
 
   // Auto-advance to next month when current month ends
   useEffect(() => {
@@ -138,32 +573,151 @@ export default function App() {
     }
   }, [currentMonth]);
 
+  // Save data when app state changes (goes to background or closes)
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState) => {
+      console.log('App state changed to:', nextAppState);
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        console.log('App going to background/inactive - saving all data');
+        if (dataLoaded) {
+          saveAllData();
+        } else {
+          console.log('Data not loaded yet, skipping background save');
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    
+    return () => {
+      subscription?.remove();
+    };
+  }, [attendanceData, plannedDays, monthlyTarget, targetMode, userData, dataLoaded]);
+
+  // Auto-save data periodically and when key data changes (only after initial load)
+  useEffect(() => {
+    if (!dataLoaded) {
+      console.log('Skipping auto-save - data not loaded yet');
+      return;
+    }
+    
+    const autoSaveTimer = setTimeout(() => {
+      console.log('Auto-save triggered after data changes');
+      saveAllData();
+    }, 5000); // Auto-save every 5 seconds
+
+    return () => clearTimeout(autoSaveTimer);
+  }, [attendanceData, plannedDays, monthlyTarget, targetMode, dataLoaded]);
+
+  // Validate data consistency on load and periodically (only after data is loaded)
+  useEffect(() => {
+    if (!dataLoaded) {
+      return; // Skip validation until data is loaded
+    }
+    
+    const validateData = async () => {
+      try {
+        const storedAttendance = await AsyncStorage.getItem('attendanceData');
+        const storedPlanned = await AsyncStorage.getItem('plannedDays');
+        const storedUserData = await AsyncStorage.getItem('userData');
+        
+        if (storedAttendance) {
+          const parsedAttendance = JSON.parse(storedAttendance);
+          const currentKeys = Object.keys(attendanceData);
+          const storedKeys = Object.keys(parsedAttendance);
+          
+          if (currentKeys.length !== storedKeys.length && storedKeys.length > 0) {
+            console.warn('Data inconsistency detected - attendance data mismatch');
+            console.log('Current keys:', currentKeys.length, 'Stored keys:', storedKeys.length);
+            // Only reload if stored data has more entries (prevents loading empty data)
+            if (storedKeys.length > currentKeys.length) {
+              console.log('Reloading from storage - stored data has more entries');
+              setAttendanceData(parsedAttendance);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Data validation error:', error);
+      }
+    };
+
+    const validationTimer = setTimeout(validateData, 2000); // Check after 2 seconds
+    return () => clearTimeout(validationTimer);
+  }, []); // Run only once on mount
+
   // Auto-mark unlogged days as WFH after 6am next day
   useEffect(() => {
-    const checkUnloggedDays = () => {
+    const checkUnloggedDays = async () => {
       const now = new Date();
       const currentHour = now.getHours();
       
       // Only run this check after 6am
       if (currentHour >= 6) {
+        // Skip if user is still in setup/onboarding screens
+        if (screen === 'loading' || screen === 'welcome' || screen === 'companySetup' || screen === 'trackingMode' || screen === 'setupComplete') {
+          console.log('Skipping auto-WFH check during onboarding/setup');
+          return;
+        }
+
+        // Check if user has any existing attendance data (to avoid notifications for new users)
+        const hasExistingData = Object.keys(attendanceData).length > 0;
+        
+        // Also check stored attendance data to be extra sure
+        const storedAttendance = await AsyncStorage.getItem('attendanceData');
+        const storedHasData = storedAttendance && Object.keys(JSON.parse(storedAttendance)).length > 0;
+        
+        // Check if this is a fresh installation (no company name means brand new user)
+        const hasCompanyData = userData.companyName && userData.companyName.trim() !== '';
+        
+        // Don't auto-mark for new users or users without existing data
+        if (!hasExistingData && !storedHasData) {
+          console.log('Skipping auto-WFH check for new user with no existing attendance data');
+          return;
+        }
+        
+        // Don't auto-mark within first 24 hours of setup completion
+        const setupTime = await AsyncStorage.getItem('setupCompletedTime');
+        if (setupTime) {
+          const setupDate = new Date(parseInt(setupTime));
+          const timeSinceSetup = now.getTime() - setupDate.getTime();
+          const hoursSinceSetup = timeSinceSetup / (1000 * 60 * 60);
+          
+          if (hoursSinceSetup < 24) {
+            console.log(`Skipping auto-WFH check - only ${Math.round(hoursSinceSetup)} hours since setup`);
+            return;
+          }
+        }
+        
         const yesterday = new Date(now);
         yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        const yesterdayStr = getLocalDateString(yesterday);
         
         // Check if yesterday was a weekday (not weekend)
-        const dayOfWeek = yesterday.getDay();
-        const isWeekday = dayOfWeek !== 0 && dayOfWeek !== 6;
+        const isWeekday = !isWeekendDate(yesterdayStr);
         
         // If yesterday was a weekday and not logged, mark as WFH
         if (isWeekday && !attendanceData[yesterdayStr]) {
           markAttendance(yesterdayStr, 'wfh', true);
           console.log(`Auto-marked ${yesterdayStr} as WFH (unlogged weekday)`);
+          
+          // Send notification about auto-WFH marking
+          sendNotification(
+            '🏠 WFH Attendance Auto-Logged',
+            `We've automatically logged ${yesterday.toLocaleDateString()} as Work From Home since no attendance was recorded.`,
+            { 
+              type: 'auto_wfh_log',
+              date: yesterdayStr,
+              status: 'wfh'
+            }
+          );
         }
       }
     };
     
-    // Check immediately on app start
-    checkUnloggedDays();
+    // Check immediately only if we're on the main calendar screen (not during onboarding)
+    if (screen === 'calendar' || (screen === 'home' && activeTab === 'home')) {
+      checkUnloggedDays();
+    }
     
     // Set up daily check at 6:01 AM
     const scheduleDailyCheck = () => {
@@ -182,7 +736,7 @@ export default function App() {
     };
     
     scheduleDailyCheck();
-  }, [attendanceData]);
+  }, [screen]); // Only run when screen changes (after setup is complete)
 
   const clearSession = async () => {
     try {
@@ -190,8 +744,14 @@ export default function App() {
       const allKeys = await AsyncStorage.getAllKeys();
       await AsyncStorage.multiRemove(allKeys);
       
-      // Cancel all notifications
-      await Notifications.cancelAllScheduledNotificationsAsync();
+      // Clear holiday cache
+      setCachedHolidays({});
+      setHolidayLastUpdated({});
+      
+      // Cancel all notifications (only on native platforms)
+      if (Platform.OS !== 'web') {
+        await Notifications.cancelAllScheduledNotificationsAsync();
+      }
       
       // Clear intervals
       if (locationCheckInterval) {
@@ -214,7 +774,7 @@ export default function App() {
       setTargetMode('days');
       setSelectedDay(null);
       setSelectedDates([]);
-      setSelectedLogDate(new Date().toISOString().split('T')[0]);
+      setSelectedLogDate(getTodayString());
       setShowModal(false);
       setShowStats(false);
       setShowPlanner(false);
@@ -223,6 +783,7 @@ export default function App() {
       setPlannerMonth(new Date());
       setStatsMonth(new Date());
       setActiveTab('home');
+      setDataLoaded(false);
       setHomeView('single');
       setPlanView('monthly');
       setStatsView('month');
@@ -249,6 +810,12 @@ export default function App() {
   };
 
   const requestNotificationPermissions = async () => {
+    // Skip notification permissions on web platform
+    if (Platform.OS === 'web') {
+      console.log('Skipping notification permissions on web platform');
+      return;
+    }
+    
     try {
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       let finalStatus = existingStatus;
@@ -273,19 +840,35 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
+      // Keep splash screen visible for 1500ms
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
       // Request notification permissions first
       await requestNotificationPermissions();
+      
+      // Load cached holidays from storage
+      await loadCachedHolidays();
       
       // Create unique user ID from device info
       const userId = await getOrCreateUserId();
       const storedData = await AsyncStorage.getItem('userData');
       
-      if (storedData) {
+      // Check if this is a truly new user by looking for any saved data
+      const hasAttendanceData = await AsyncStorage.getItem('attendanceData');
+      const hasCompanyName = storedData ? JSON.parse(storedData).companyName : '';
+      
+      if (storedData && hasCompanyName && hasCompanyName.trim() !== '') {
         const parsed = JSON.parse(storedData);
         setUserData({ ...parsed, userId });
         
         await loadAllData();
+        
         setScreen('calendar');
+        
+        // Update holidays for user's country
+        if (parsed.country) {
+          updateCurrentYearHolidays(parsed.country);
+        }
         
         // Setup notifications based on tracking mode
         if (parsed.trackingMode === 'auto') {
@@ -294,6 +877,7 @@ export default function App() {
           await setupManualNotifications();
         }
       } else {
+        // New user or incomplete setup - show welcome screen
         setScreen('welcome');
       }
     } catch (error) {
@@ -302,19 +886,97 @@ export default function App() {
     }
   };
 
+  const saveAllData = async () => {
+    try {
+      console.log('Saving all app data...');
+      console.log('Attendance data entries to save:', Object.keys(attendanceData).length);
+      console.log('Planned days entries to save:', Object.keys(plannedDays).length);
+      
+      // Don't save if we haven't loaded data yet (prevent overwriting with empty state)
+      if (!dataLoaded || (Object.keys(attendanceData).length === 0 && Object.keys(plannedDays).length === 0)) {
+        console.warn('Skipping save - data not loaded or no data to save');
+        return;
+      }
+      
+      await AsyncStorage.setItem('attendanceData', JSON.stringify(attendanceData));
+      await AsyncStorage.setItem('plannedDays', JSON.stringify(plannedDays));
+      await AsyncStorage.setItem('monthlyTarget', monthlyTarget.toString());
+      await AsyncStorage.setItem('targetMode', targetMode);
+      await AsyncStorage.setItem('userData', JSON.stringify(userData));
+      
+      // Create backup of critical data
+      if (Object.keys(attendanceData).length > 0) {
+        await AsyncStorage.setItem('attendanceData_backup', JSON.stringify({
+          data: attendanceData,
+          timestamp: Date.now(),
+          version: '1.0'
+        }));
+      }
+      
+      console.log('All data saved successfully with backup');
+    } catch (error) {
+      console.error('Save data error:', error);
+    }
+  };
+
   const loadAllData = async () => {
     try {
-      const attendance = await AsyncStorage.getItem('attendanceData');
+      console.log('Loading all app data...');
+      let attendance = await AsyncStorage.getItem('attendanceData');
       const planned = await AsyncStorage.getItem('plannedDays');
       const target = await AsyncStorage.getItem('monthlyTarget');
-      const targetMode = await AsyncStorage.getItem('targetMode');
+      const targetModeData = await AsyncStorage.getItem('targetMode');
       
-      if (attendance) setAttendanceData(JSON.parse(attendance));
-      if (planned) setPlannedDays(JSON.parse(planned));
-      if (target) setMonthlyTarget(parseInt(target));
-      if (targetMode) setTargetMode(targetMode);
+      // Try to recover from backup if main data is empty or corrupted
+      if (!attendance || attendance === '{}') {
+        console.log('Main attendance data is empty, checking backup...');
+        const backup = await AsyncStorage.getItem('attendanceData_backup');
+        if (backup) {
+          try {
+            const backupData = JSON.parse(backup);
+            if (backupData.data && Object.keys(backupData.data).length > 0) {
+              console.log('Recovering from backup data...');
+              attendance = JSON.stringify(backupData.data);
+              // Restore the main data from backup
+              await AsyncStorage.setItem('attendanceData', attendance);
+            }
+          } catch (backupError) {
+            console.error('Error parsing backup data:', backupError);
+          }
+        }
+      }
+      
+      if (attendance) {
+        const parsedAttendance = JSON.parse(attendance);
+        setAttendanceData(parsedAttendance);
+        console.log('Loaded attendance data:', Object.keys(parsedAttendance).length, 'entries');
+      } else {
+        console.log('No attendance data found in storage or backup');
+        setAttendanceData({});
+      }
+      
+      if (planned) {
+        const parsedPlanned = JSON.parse(planned);
+        setPlannedDays(parsedPlanned);
+        console.log('Loaded planned days:', Object.keys(parsedPlanned).length, 'entries');
+      } else {
+        console.log('No planned days found in storage');
+      }
+      
+      if (target) {
+        setMonthlyTarget(parseInt(target));
+        console.log('Loaded monthly target:', target);
+      }
+      if (targetModeData) {
+        setTargetMode(targetModeData);
+        console.log('Loaded target mode:', targetModeData);
+      }
+      
+      setDataLoaded(true);
+      console.log('Data loading completed - dataLoaded flag set to true');
     } catch (error) {
       console.error('Load data error:', error);
+      setDataLoaded(true); // Set flag even on error to prevent infinite loading
     }
   };
 
@@ -336,8 +998,13 @@ export default function App() {
   };
 
   const setupManualNotifications = async () => {
-    // Cancel ALL existing notifications to prevent spam
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    isSettingUpNotifications = true; // Disable notifications during setup
+    
+    // Cancel ALL existing notifications to prevent spam (only on native platforms)
+    if (Platform.OS !== 'web') {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+      console.log('Cleared all existing notifications');
+    }
     
     console.log('Setting up manual notifications...');
     
@@ -351,6 +1018,49 @@ export default function App() {
     }, 1000);
 
     console.log('Manual notifications configured - reminders will be sent on weekdays');
+
+    // Schedule daily reminder notifications (only on native platforms)
+    if (Platform.OS !== 'web') {
+      const reminderTimes = [
+        { hour: 10, minute: 0, title: '🌅 Morning Check-in', body: 'How are you working today? Office, WFH, or Leave?' },
+        { hour: 13, minute: 0, title: '☀️ Afternoon Check-in', body: 'Quick reminder: Have you logged your attendance for today?' },
+        { hour: 16, minute: 0, title: '🌆 End of Day Reminder', body: 'Don\'t forget to log your work location before you finish!' }
+      ];
+
+      // Schedule only 3 notifications total - one for each time slot
+      for (let i = 0; i < reminderTimes.length; i++) {
+        const time = reminderTimes[i];
+        try {
+          // Calculate next occurrence of this time (tomorrow if time has passed today)
+          const now = new Date();
+          const nextTrigger = new Date();
+          nextTrigger.setHours(time.hour, time.minute, 0, 0);
+          
+          // If time has already passed today, schedule for tomorrow
+          if (nextTrigger <= now) {
+            nextTrigger.setDate(nextTrigger.getDate() + 1);
+          }
+          
+          await Notifications.scheduleNotificationAsync({
+            content: {
+              title: time.title,
+              body: time.body,
+              categoryIdentifier: 'MANUAL_CHECKIN',
+              data: { type: 'manual_reminder' }
+            },
+            trigger: {
+              date: nextTrigger,
+              repeats: false, // We'll reschedule after each notification
+            },
+          });
+          console.log(`Scheduled ${time.title} for ${nextTrigger.toLocaleString()}`);
+        } catch (error) {
+          console.log(`Error scheduling ${time.title}:`, error);
+        }
+      }
+      
+      console.log('Manual notifications: 3 reminders scheduled for next occurrence of each time');
+    }
 
     // Set up notification categories with actions
     try {
@@ -367,6 +1077,15 @@ export default function App() {
         { 
           identifier: 'wfh', 
           buttonTitle: '🏠 WFH', 
+          options: { 
+            opensAppToForeground: false,
+            isAuthenticationRequired: false,
+            isDestructive: false
+          } 
+        },
+        { 
+          identifier: 'leave', 
+          buttonTitle: '🏖️ Leave', 
           options: { 
             opensAppToForeground: false,
             isAuthenticationRequired: false,
@@ -401,33 +1120,205 @@ export default function App() {
     } catch (error) {
       console.error('Error setting up notification category:', error);
     }
+    
+    // Re-enable notifications after setup is complete
+    setTimeout(() => {
+      isSettingUpNotifications = false;
+      console.log('Manual notification setup complete - notifications re-enabled');
+    }, 1000);
+  };
+
+  // Enhanced prominent disclosure for location permission (Google Play compliance)
+  const showLocationPermissionDisclosure = async () => {
+    return new Promise((resolve) => {
+      Alert.alert(
+        'LOCATION DATA DISCLOSURE',
+        'LOCATION DATA ACCESS & COLLECTION NOTICE:\n\n' +
+        'LOCATION DATA ACCESSED:\n' +
+        '• Your precise GPS coordinates (latitude/longitude)\n' +
+        '• Current location during app use and scheduled background checks\n\n' +
+        'LOCATION DATA COLLECTED & STORED:\n' +
+        '• Office proximity status (within 200m = office attendance)\n' +
+        '• Daily attendance records (office/home dates only)\n' +
+        '• NO GPS coordinates stored permanently\n' +
+        '• NO location history or movement tracking data\n\n' +
+        'PURPOSE & USAGE:\n' +
+        '• Automatically detect when you arrive at office\n' +
+        '• Scheduled background checks: 10am, 1pm, 3pm weekdays only\n' +
+        '• Generate work location insights and productivity summaries\n' +
+        '• Reduce manual daily logging effort for hybrid workers\n\n' +
+        '� STORAGE: Data stays on your device only\n' +
+        '� SHARING: Location data is never shared with third parties\n\n' +
+        '✅ You can opt out anytime by switching to Manual mode in Settings',
+        [
+          {
+            text: 'Privacy Details',
+            onPress: () => {
+              Alert.alert(
+                'COMPLETE LOCATION DATA POLICY & PRIVACY',
+                'LOCATION DATA ACCESSED:\n' +
+                '• Precise GPS coordinates (latitude/longitude)\n' +
+                '• Current location when app is open (foreground)\n' +
+                '• Scheduled background location checks (10am, 1pm, 3pm weekdays)\n\n' +
+                'LOCATION DATA COLLECTED & STORED:\n' +
+                '• Office proximity determination (within 200m radius)\n' +
+                '• Daily attendance status (office/home/leave dates only)\n' +
+                '• NO GPS coordinates stored permanently\n' +
+                '• NO location history, routes, or movement patterns\n\n' +
+                'PURPOSE OF LOCATION DATA USAGE:\n' +
+                '• Automatically detect office arrival for attendance logging\n' +
+                '• Generate work location analytics and productivity insights\n' +
+                '• Provide location-aware productivity notifications\n' +
+                '• Reduce manual daily attendance logging effort\n\n' +
+                'DATA PROTECTION MEASURES:\n' +
+                '• All data stored locally on device using secure local storage\n' +
+                '• NO transmission to external servers or cloud services\n' +
+                '• NO sharing with third parties under any circumstances\n' +
+                '• Data encrypted using device security features\n\n' +
+                'YOUR RIGHTS & CONTROL:\n' +
+                '• Revoke location permission anytime in device Settings\n' +
+                '• Switch to Manual Entry mode to disable all location access\n' +
+                '• Complete app functionality available without location\n' +
+                '• Delete all data using in-app Reset option\n' +
+                '• Uninstall removes all data permanently from device\n\n' +
+                'COMPLIANCE: Meets app store location policy requirements for legitimate business use case of hybrid work attendance automation.',
+                [{ text: 'I Understand & Consent to Location Usage', onPress: resolve }]
+              );
+            }
+          },
+          {
+            text: 'Deny Location Access',
+            style: 'cancel',
+            onPress: resolve
+          },
+          {
+            text: 'I Consent - Allow Location',
+            onPress: resolve
+          }
+        ]
+      );
+    });
   };
 
   const setupAutoTracking = async (userConfig) => {
-    await Notifications.cancelAllScheduledNotificationsAsync();
+    // Cancel notifications only on native platforms
+    if (Platform.OS !== 'web') {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+    }
     
-    // Request location permission
-    const { status } = await Location.requestForegroundPermissionsAsync();
+    // Note: Location permission should already be granted by the caller
+    // Check permission status to be safe
+    const { status } = await Location.getForegroundPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Location Required', 'Auto tracking needs location permission to work');
+      console.warn('setupAutoTracking called without location permission');
       return;
     }
 
-    // Schedule 7am reminder for planned office days
-    await scheduleOfficeDayReminders();
-    
-    // Start hourly location check
-    if (userConfig.companyLocation) {
+    // Start hourly location check (only on native platforms)
+    if (Platform.OS !== 'web' && userConfig.companyLocation) {
       startHourlyLocationCheck(userConfig.companyLocation);
     }
   };
 
+  // Schedule notification for a specific planned office day
+  const scheduleSpecificOfficeDayReminder = async (dateStr) => {
+    if (Platform.OS === 'web') return;
+    
+    console.log('📅 Scheduling notification for specific office day:', dateStr);
+    
+    try {
+      // Parse date properly using local timezone
+      const [year, month, day] = dateStr.split('-').map(Number);
+      const planDate = new Date(year, month - 1, day); // month is 0-indexed
+      
+      // Schedule for 8am on the planned day (if in future)
+      const reminderTime = new Date(planDate);
+      reminderTime.setHours(8, 0, 0, 0);
+      
+      const nowTime = new Date();
+      const timeDiff = reminderTime.getTime() - nowTime.getTime();
+      const hoursFromNow = timeDiff / (1000 * 60 * 60);
+      
+      console.log('📅 Reminder time:', reminderTime.toLocaleString());
+      console.log('📅 Time difference in hours:', hoursFromNow);
+      
+      // Only schedule if it's more than 1 hour in the future
+      if (hoursFromNow > 1) {
+        const notificationId = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: "📅 Planned Office Day",
+            body: `Today is a planned office day. Remember to check-in when you arrive!`,
+            data: { 
+              type: 'planned_office_day', 
+              date: dateStr 
+            }
+          },
+          trigger: {
+            date: reminderTime
+          }
+        });
+        
+        console.log('📅 Scheduled notification for:', dateStr, 'at', reminderTime.toLocaleString(), 'ID:', notificationId);
+      } else {
+        console.log('📅 Skipping notification for', dateStr, '- too close to current time');
+      }
+    } catch (error) {
+      console.error('📅 Error scheduling notification for:', dateStr, error);
+    }
+  };
+  
+  // Cancel notification for a specific day
+  const cancelSpecificOfficeDayReminder = async (dateStr) => {
+    if (Platform.OS === 'web') return;
+    
+    console.log('❌ Canceling notification for specific office day:', dateStr);
+    
+    try {
+      const allScheduled = await Notifications.getAllScheduledNotificationsAsync();
+      const dayNotifications = allScheduled.filter(notif => 
+        notif.content?.data?.type === 'planned_office_day' && 
+        notif.content?.data?.date === dateStr
+      );
+      
+      for (const notif of dayNotifications) {
+        console.log('❌ Canceling notification ID:', notif.identifier);
+        await Notifications.cancelScheduledNotificationAsync(notif.identifier);
+      }
+    } catch (error) {
+      console.error('❌ Error canceling notification for:', dateStr, error);
+    }
+  };
+
+  // Add debounce for scheduling to prevent rapid successive calls
+  const schedulingInProgress = React.useRef(false);
+  
   const scheduleOfficeDayReminders = async () => {
+    // Prevent concurrent calls
+    if (schedulingInProgress.current) {
+      console.log('🔔 scheduleOfficeDayReminders already in progress, skipping...');
+      return;
+    }
+    
+    schedulingInProgress.current = true;
+    console.log('🔔 Starting to schedule office day reminders...');
+    
+    // Skip notifications on web platform
+    if (Platform.OS === 'web') {
+      console.log('Skipping office day reminders on web platform');
+      schedulingInProgress.current = false;
+      return;
+    }
+    
+    // Schedule planned office day notifications for both Smart Auto and Manual modes
+    console.log('🔔 Scheduling office day reminders for all tracking modes...');
+    
     // Cancel existing office day reminders to prevent duplicates
     const existingNotifications = await Notifications.getAllScheduledNotificationsAsync();
     const officeReminders = existingNotifications.filter(n => 
       n.content.data?.type === 'auto' || n.content.data?.type === 'planned'
     );
+    
+    console.log(`Found ${officeReminders.length} existing planned notifications to cancel`);
     
     for (const reminder of officeReminders) {
       await Notifications.cancelScheduledNotificationAsync(reminder.identifier);
@@ -437,73 +1328,187 @@ export default function App() {
     const tomorrow = new Date(today);
     tomorrow.setDate(today.getDate() + 1);
     
+    console.log(`Current planned days:`, plannedDays);
+    console.log(`Today: ${today.toISOString()}, Tomorrow: ${tomorrow.toISOString()}`);
+    
     // Only schedule for future office days (starting from tomorrow to avoid immediate notifications)
-    Object.keys(plannedDays).forEach(async (dateStr) => {
-      if (plannedDays[dateStr] === 'office') {
-        const planDate = new Date(dateStr + 'T00:00:00');
+    const schedulingPromises = [];
+    
+    for (const [dateStr, type] of Object.entries(plannedDays)) {
+      if (type === 'office') {
+        // Fix date parsing - use proper date construction to avoid timezone issues
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const planDate = new Date(year, month - 1, day); // month is 0-indexed
+        
+        console.log(`Checking planned office date: ${dateStr}, planDate: ${planDate.toLocaleDateString()}, today: ${today.toLocaleDateString()}, tomorrow: ${tomorrow.toLocaleDateString()}`);
         
         // Only schedule if the date is tomorrow or later (and within 30 days)
         if (planDate >= tomorrow && planDate <= new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000)) {
-          const reminderTime = new Date(planDate.getFullYear(), planDate.getMonth(), planDate.getDate(), 8, 0, 0);
+          // Create reminder time for 8am on the planned date (local timezone)
+          const reminderTime = new Date(year, month - 1, day, 8, 0, 0);
+          const now = new Date();
           
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: '� Planned Office Day',
-              body: 'You planned to go to office today. Have a great day!',
-              data: { 
-                type: 'planned', 
-                date: dateStr,
-                replacesDailyNotifications: true // Flag to indicate this replaces daily notifications
+          console.log(`Reminder time: ${reminderTime.toLocaleString()}, Current time: ${now.toLocaleString()}`);
+          
+          // Ensure reminder time is in the future (at least 1 hour from now to avoid immediate sending)
+          if (reminderTime > new Date(now.getTime() + 60 * 60 * 1000)) {
+            console.log(`✅ Scheduling notification for ${dateStr} at ${reminderTime.toLocaleString()}`);
+            
+            const promise = Notifications.scheduleNotificationAsync({
+              content: {
+                title: '🏢 Planned Office Day',
+                body: 'You planned to go to office today. Have a great day!',
+                data: { 
+                  type: 'planned', 
+                  date: dateStr,
+                  replacesDailyNotifications: true
+                },
+                categoryIdentifier: 'PLANNED_OFFICE_DAY',
               },
-              categoryIdentifier: 'PLANNED_OFFICE_DAY',
-            },
-            trigger: {
-              date: reminderTime
-            },
-          });
+              trigger: {
+                date: reminderTime
+              },
+            }).then(() => {
+              console.log(`Successfully scheduled notification for ${dateStr}`);
+            }).catch((error) => {
+              console.error(`Failed to schedule notification for ${dateStr}:`, error);
+            });
+            
+            schedulingPromises.push(promise);
+          } else {
+            console.log(`⏰ Skipping notification for ${dateStr} - reminder time ${reminderTime.toLocaleString()} is too close to now or in the past`);
+          }
+        } else {
+          console.log(`📅 Skipping notification for ${dateStr} - date is today, past, or too far in future (planDate: ${planDate.toLocaleDateString()}, tomorrow: ${tomorrow.toLocaleDateString()})`);
         }
       }
-    });
+    }
+    
+    try {
+      await Promise.all(schedulingPromises);
+      
+      console.log('✅ Finished scheduling office day reminders');
+      
+      // Log what's now scheduled
+      const updatedNotifications = await Notifications.getAllScheduledNotificationsAsync();
+      const plannedNotifications = updatedNotifications.filter(n => n.content.data?.type === 'planned');
+      console.log(`Now have ${plannedNotifications.length} planned notifications scheduled:`, 
+        plannedNotifications.map(n => ({
+          date: n.content.data?.date,
+          triggerDate: n.trigger?.date ? new Date(n.trigger.date * 1000).toISOString() : 'immediate'
+        }))
+      );
+    } finally {
+      schedulingInProgress.current = false;
+    }
+  };
+
+  const checkLocationAndLogAttendance = async (officeLocation, isManualCheck = false) => {
+    const today = getTodayString();
+    
+    // For manual checks (app opening), only log debug info if already logged
+    if (attendanceData[today]) {
+      if (isManualCheck) {
+        console.log(`Manual check: Already logged attendance for today (${attendanceData[today]}), no location action needed`);
+        return; // Quietly return without showing messages
+      } else {
+        console.log('Already logged attendance for today, skipping scheduled location check');
+        return;
+      }
+    }
+
+    try {
+      console.log(`${isManualCheck ? 'Manual' : 'Scheduled'} location check for auto-attendance...`);
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const distance = calculateDistance(
+        location.coords.latitude,
+        location.coords.longitude,
+        officeLocation.latitude,
+        officeLocation.longitude
+      );
+
+      console.log(`Distance to office: ${distance.toFixed(3)}km`);
+
+      // If within 200m of office and not already logged, mark as office day
+      if (distance < 0.2) {
+        await markAttendance(today, 'office', true);
+        
+        // Send notification about auto-detection
+        await sendNotification(
+          '🏢 Office Attendance Auto-Logged',
+          `Your location shows you're at the office today. We've automatically logged your attendance for ${new Date().toLocaleDateString()}.`,
+          { 
+            type: 'auto_office_log',
+            date: today,
+            status: 'office'
+          }
+        );
+        console.log('✅ Auto-logged office attendance based on location');
+      } else {
+        console.log('Not close enough to office for auto-logging');
+      }
+    } catch (error) {
+      console.log('Location check error:', error);
+    }
+  };
+
+  const setupScheduledLocationChecks = (officeLocation) => {
+    // Skip location checking on web platform
+    if (Platform.OS === 'web') {
+      console.log('Skipping scheduled location checks on web platform');
+      return;
+    }
+
+    console.log('Setting up scheduled location checks for 10am, 1pm, 3pm...');
+
+    // Schedule location checks at 10am, 1pm, 3pm
+    const scheduleLocationCheck = (hour) => {
+      const scheduleDaily = () => {
+        const now = new Date();
+        const nextCheck = new Date();
+        nextCheck.setHours(hour, 0, 0, 0);
+        
+        // If time has passed today, schedule for tomorrow
+        if (nextCheck <= now) {
+          nextCheck.setDate(nextCheck.getDate() + 1);
+        }
+        
+        const timeUntilCheck = nextCheck.getTime() - now.getTime();
+        
+        setTimeout(() => {
+          // Check if it's a weekday and user hasn't logged yet
+          const checkDay = new Date();
+          const isWeekday = checkDay.getDay() >= 1 && checkDay.getDay() <= 5;
+          
+          if (isWeekday) {
+            checkLocationAndLogAttendance(officeLocation, false);
+          }
+          
+          // Schedule the next check for same time tomorrow
+          scheduleDaily();
+        }, timeUntilCheck);
+        
+        console.log(`Next ${hour}:00 location check scheduled for ${nextCheck.toLocaleString()}`);
+      };
+      
+      scheduleDaily();
+    };
+
+    // Schedule all three daily checks
+    scheduleLocationCheck(10); // 10am
+    scheduleLocationCheck(13); // 1pm  
+    scheduleLocationCheck(15); // 3pm
   };
 
   const startHourlyLocationCheck = (officeLocation) => {
-    const checkLocation = async () => {
-      const today = new Date().toISOString().split('T')[0];
-      
-      // Don't check if already marked for today
-      if (attendanceData[today]) return;
-
-      try {
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-
-        const distance = calculateDistance(
-          location.coords.latitude,
-          location.coords.longitude,
-          officeLocation.latitude,
-          officeLocation.longitude
-        );
-
-        // If within 200m of office, mark as office day
-        if (distance < 0.2) {
-          await markAttendance(today, 'office', true);
-          
-          // Send notification about auto-detection
-          await Notifications.presentNotificationAsync({
-            title: '✅ Auto-detected!',
-            body: 'You\'re at office! Day marked automatically.',
-          });
-        }
-      } catch (error) {
-        console.log('Location check error:', error);
-      }
-    };
-
-    // Check immediately and then every hour
-    checkLocation();
-    const interval = setInterval(checkLocation, 60 * 60 * 1000); // Every hour
-    setLocationCheckInterval(interval);
+    // New approach: scheduled checks + manual checks when app opens
+    setupScheduledLocationChecks(officeLocation);
+    
+    // Also check immediately when app opens (manual check)
+    checkLocationAndLogAttendance(officeLocation, true);
   };
 
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -583,10 +1588,24 @@ export default function App() {
     
     setIsLoadingCompanies(true);
     try {
-      // Using OpenCorporates API (free tier available) - Global search
-      const response = await fetch(
-        `https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(query)}&per_page=15&format=json`
-      );
+      // Create country filter for API based on user's location
+      let countryCode = '';
+      const userCountry = userData.country || 'australia';
+      
+      // Map our country codes to API compatible codes
+      const countryMapping = {
+        australia: 'au',
+        india: 'in', 
+        usa: 'us',
+        uk: 'gb',
+        canada: 'ca'
+      };
+      
+      countryCode = countryMapping[userCountry] || 'au';
+      
+      // Using OpenCorporates API with country filtering
+      const apiUrl = `https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(query)}&jurisdiction_code=${countryCode}&per_page=15&format=json`;
+      const response = await fetch(apiUrl);
       
       if (response.ok) {
         const data = await response.json();
@@ -602,8 +1621,9 @@ export default function App() {
     }
     
     setIsLoadingCompanies(false);
-    // Fallback to popular companies if API fails
-    return POPULAR_COMPANIES.filter(company =>
+    // Fallback to popular companies based on user's location if API fails
+    const popularCompanies = getPopularCompanies(userData.country);
+    return popularCompanies.filter(company =>
       company.toLowerCase().includes(query.toLowerCase())
     ).slice(0, 10);
   };
@@ -690,16 +1710,47 @@ export default function App() {
   };
 
   const markAttendance = async (date, type, autoDetected = false) => {
+    console.log(`Marking attendance: ${date} as ${type}`);
     const newData = { ...attendanceData, [date]: type };
     setAttendanceData(newData);
     
-    await AsyncStorage.setItem('attendanceData', JSON.stringify(newData));
+    // Immediately save to AsyncStorage with backup
+    try {
+      await AsyncStorage.setItem('attendanceData', JSON.stringify(newData));
+      // Create a backup with timestamp
+      await AsyncStorage.setItem('attendanceData_backup', JSON.stringify({
+        data: newData,
+        timestamp: Date.now(),
+        version: '1.0'
+      }));
+      console.log('Attendance data saved successfully with backup');
+    } catch (error) {
+      console.error('Error saving attendance data:', error);
+    }
+    
     await saveToFirebase('attendance', newData);
 
     if (!autoDetected) {
       setSelectedDay(null);
       setShowModal(false);
     }
+  };
+
+  const clearAttendance = async (date) => {
+    console.log(`Clearing attendance for: ${date}`);
+    const newData = { ...attendanceData };
+    delete newData[date];
+    setAttendanceData(newData);
+    
+    // Immediately save to AsyncStorage
+    try {
+      await AsyncStorage.setItem('attendanceData', JSON.stringify(newData));
+      console.log('Attendance data cleared and saved successfully');
+    } catch (error) {
+      console.error('Error saving cleared attendance data:', error);
+    }
+    
+    await saveToFirebase('attendance', newData);
   };
 
   const markMultipleAttendance = async (type) => {
@@ -738,7 +1789,7 @@ export default function App() {
     const month = currentMonth.getMonth();
     const firstDay = new Date(year, month, 1).getDay();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayString();
 
     const days = [];
     
@@ -750,18 +1801,24 @@ export default function App() {
     // Days of the month
     for (let day = 1; day <= daysInMonth; day++) {
       const date = new Date(year, month, day);
-      const dateStr = date.toISOString().split('T')[0];
-      const dayOfWeek = date.getDay();
+      // Create date string without timezone issues
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
       
       days.push({
         day,
         date: dateStr,
         isToday: dateStr === today,
-        isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
-        isHoliday: PUBLIC_HOLIDAYS[userData.country]?.includes(dateStr),
+        isWeekend: isWeekendDate(dateStr), // Use the proper weekend detection function
+        isHoliday: getPublicHolidays(userData.country).includes(dateStr),
         type: attendanceData[dateStr],
         planned: plannedDays[dateStr]
       });
+    }
+
+    // Add empty cells to complete the last week (ensure 7 days per row)
+    const totalCells = Math.ceil(days.length / 7) * 7;
+    while (days.length < totalCells) {
+      days.push({ day: null, isEmpty: true });
     }
 
     return days;
@@ -838,7 +1895,7 @@ export default function App() {
       }
 
       // Check if public holiday
-      const publicHolidays = PUBLIC_HOLIDAYS[userData.country] || [];
+      const publicHolidays = getPublicHolidays(userData.country);
       if (publicHolidays.includes(dateStr)) {
         holidays++;
         continue;
@@ -900,11 +1957,10 @@ export default function App() {
     for (let day = 1; day <= today; day++) {
       const date = new Date(year, month, day);
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const dayOfWeek = date.getDay();
       
       // Skip weekends and holidays for working days count
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        const publicHolidays = PUBLIC_HOLIDAYS[userData.country] || [];
+      if (!isWeekendDate(dateStr)) {
+        const publicHolidays = getPublicHolidays(userData.country);
         if (!publicHolidays.includes(dateStr) && plannedDays[dateStr] !== 'leave') {
           workingDaysPassed++;
         }
@@ -941,11 +1997,17 @@ export default function App() {
 
   // Handle notification responses
   useEffect(() => {
+    // Skip notification listeners on web platform
+    if (Platform.OS === 'web') {
+      return () => {}; // Return empty cleanup function
+    }
+    
     // Handle notification responses (when user taps action buttons)
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(response => {
       console.log('Notification response received:', response);
       const action = response.actionIdentifier;
-      const today = new Date().toISOString().split('T')[0];
+      // Use consistent local date formatting
+      const today = getTodayString();
       
       // Check if day is already logged
       if (attendanceData[today]) {
@@ -959,11 +2021,15 @@ export default function App() {
       if (action === 'office') {
         console.log('Marking attendance as office for:', today);
         markAttendance(today, 'office');
-        Alert.alert('✅ Marked as Office', `Attendance recorded for ${today}`);
+        Alert.alert('🏢 Office Day Logged!', `✅ Attendance recorded for ${today}`, [{ text: 'OK' }]);
       } else if (action === 'wfh') {
         console.log('Marking attendance as WFH for:', today);
         markAttendance(today, 'wfh');
-        Alert.alert('✅ Marked as WFH', `Attendance recorded for ${today}`);
+        Alert.alert('🏠 WFH Day Logged!', `✅ Attendance recorded for ${today}`, [{ text: 'OK' }]);
+      } else if (action === 'leave') {
+        console.log('Marking attendance as Leave for:', today);
+        markAttendance(today, 'leave');
+        Alert.alert('🏖️ Leave Day Logged!', `✅ Attendance recorded for ${today}`, [{ text: 'OK' }]);
       } else if (action === 'confirm_office') {
         console.log('Confirming planned office day for:', today);
         markAttendance(today, 'office');
@@ -973,10 +2039,43 @@ export default function App() {
         markAttendance(today, 'wfh');
         Alert.alert('🏠 Changed to WFH', `No worries! Marked as WFH for ${today}`);
       } else if (action === Notifications.DEFAULT_ACTION_IDENTIFIER) {
-        // User tapped the notification body (not an action button)
-        console.log('Default notification tap - opening app');
-        // Navigate to home screen or calendar view
-        setScreen('calendar');
+        // User tapped the notification body (not an action button) - Show quick action dialog
+        console.log('Default notification tap - showing quick action dialog');
+        
+        // Show alert with three quick action buttons
+        Alert.alert(
+          '📱 Quick Log Attendance',
+          `Choose your attendance for today (${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}):`,
+          [
+            {
+              text: '🏢 Office',
+              onPress: () => {
+                markAttendance(today, 'office');
+                Alert.alert('🏢 Office Day Logged!', `✅ Attendance recorded for ${today}`);
+              }
+            },
+            {
+              text: '🏠 WFH',
+              onPress: () => {
+                markAttendance(today, 'wfh');
+                Alert.alert('🏠 WFH Day Logged!', `✅ Attendance recorded for ${today}`);
+              }
+            },
+            {
+              text: '🏖️ Leave',
+              onPress: () => {
+                markAttendance(today, 'leave');
+                Alert.alert('🏖️ Leave Day Logged!', `✅ Attendance recorded for ${today}`);
+              }
+            },
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: () => setScreen('home')
+            }
+          ],
+          { cancelable: true }
+        );
       } else {
         console.log('Unknown action identifier:', action);
       }
@@ -985,7 +2084,8 @@ export default function App() {
     // Handle notifications when app is in foreground - check if already logged
     const receivedSubscription = Notifications.addNotificationReceivedListener(notification => {
       console.log('Notification received while app is open:', notification);
-      const today = new Date().toISOString().split('T')[0];
+      // Use consistent local date formatting
+      const today = getTodayString();
       
       // If notification has checkLogged flag and day is already logged, don't show
       if (notification.request.content.data?.checkLogged && attendanceData[today]) {
@@ -1033,13 +2133,13 @@ export default function App() {
     
     // Count attendance and working days for the period
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
+      const dateStr = getLocalDateString(d);
       const dayOfWeek = d.getDay();
       const attendance = attendanceData[dateStr];
       
       // Check if it's a working day (not weekend, holiday, or leave)
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Not weekend
-        const publicHolidays = PUBLIC_HOLIDAYS[userData.country] || [];
+      if (!isWeekendDate(dateStr)) { // Not weekend
+        const publicHolidays = getPublicHolidays(userData.country);
         if (!publicHolidays.includes(dateStr) && plannedDays[dateStr] !== 'leave') {
           workingDays++;
         }
@@ -1353,7 +2453,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
       });
 
       // Create a filename with current date and period
-      const fileName = `OfficeTracker_Report_${periodName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
+      const fileName = `OfficeTracker_Report_${periodName.replace(/\s+/g, '_')}_${getTodayString()}.pdf`;
       
       // Move to a permanent location
       const permanentUri = `${documentDirectory}${fileName}`;
@@ -1548,7 +2648,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     const year = plannerMonth.getFullYear();
     const month = plannerMonth.getMonth();
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    // Use consistent date formatting
+    const todayStr = getTodayString();
     
     // Get first day of month and number of days
     const firstDay = new Date(year, month, 1);
@@ -1563,11 +2664,12 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     for (let week = 0; week < 6; week++) {
       const days = [];
       for (let day = 0; day < 7; day++) {
-        const dateStr = currentDate.toISOString().split('T')[0];
+        // Use consistent date formatting
+        const dateStr = getLocalDateString(currentDate);
         const isCurrentMonth = currentDate.getMonth() === month;
         const isPast = currentDate < today && dateStr !== todayStr;
-        const isWeekend = currentDate.getDay() === 0 || currentDate.getDay() === 6;
-        const isHoliday = PUBLIC_HOLIDAYS[userData.country || 'australia']?.includes(dateStr);
+        const isWeekend = isWeekendDate(dateStr);
+        const isHoliday = getPublicHolidays(userData.country || 'australia').includes(dateStr);
         const isPlanned = plannedDays[dateStr] === 'office';
         const isWFHPlanned = plannedDays[dateStr] === 'wfh';
         const isDisabled = !isCurrentMonth || isPast || isWeekend || isHoliday;
@@ -1606,7 +2708,6 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               dayData.isWeekend && styles.plannerDayWeekend,
               dayData.isHoliday && styles.plannerDayHoliday
             ]}
-            disabled={dayData.isDisabled}
             onPress={() => handlePlannerDayPress(dayData)}
             onPressIn={() => setIsSelecting(true)}
             onPressOut={() => setIsSelecting(false)}
@@ -1620,7 +2721,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             ]}>
               {dayData.dayNumber}
             </Text>
-            {dayData.isHoliday && <Text style={styles.holidayIndicator}>🎉</Text>}
+            {dayData.isHoliday && <Text style={styles.holidayIndicator}>�</Text>}
             {dayData.isPlanned && <Text style={styles.plannedIndicator}>🏢</Text>}
           </TouchableOpacity>
         ))}
@@ -1629,7 +2730,15 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
   };
 
   const handlePlannerDayPress = async (dayData) => {
-    if (dayData.isDisabled) return;
+    if (dayData.isDisabled) {
+      if (dayData.isHoliday) {
+        const holidayName = getHolidayName(dayData.dateStr, userData.country);
+        Alert.alert('🌲 Public Holiday', `${holidayName}\n\nYou cannot plan attendance on public holidays.`);
+      } else if (dayData.isWeekend) {
+        Alert.alert('🏖️ Weekend', 'You cannot plan attendance on weekends.');
+      }
+      return;
+    }
     
     const newPlanned = { ...plannedDays };
     
@@ -1657,31 +2766,137 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     setPlannedDays(newPlanned);
     await AsyncStorage.setItem('plannedDays', JSON.stringify(newPlanned));
     
-    // Reschedule notifications if in auto mode
-    if (userData.trackingMode === 'auto') {
-      await scheduleOfficeDayReminders();
+    // Handle notification for this specific day only
+    if (dayData.type === 'office' && dayData.isPlanned) {
+      // Schedule notification for this planned office day
+      await scheduleSpecificOfficeDayReminder(dayData.dateStr);
+    } else {
+      // Cancel notification for this day (if it was previously planned)
+      await cancelSpecificOfficeDayReminder(dayData.dateStr);
     }
   };
 
   // HOME SCREEN
   const renderHomeScreen = () => {
+    // Use consistent local date calculations
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-    const selectedDate = new Date(selectedLogDate);
+    const todayStr = getTodayString();
+    const selectedDate = getLocalDate(selectedLogDate);
     const dayName = selectedDate.toLocaleDateString('en-US', { weekday: 'long' });
-    const isWeekend = selectedDate.getDay() === 0 || selectedDate.getDay() === 6;
+    
+    // Use utility function for proper weekend detection
+    const isWeekend = isWeekendDate(selectedLogDate);
+    const isToday = selectedLogDate === todayStr;
     const currentAttendance = attendanceData[selectedLogDate];
+    const todayAttendance = attendanceData[todayStr];
     
     return (
       <ScrollView style={styles.homeContainer} showsVerticalScrollIndicator={false}>
-        <Text style={styles.homeTitle}>📅 {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {dayName}</Text>
-        <Text style={styles.homeDate}>
-          {selectedDate.toLocaleDateString('en-US', { 
-            month: 'long', 
-            day: 'numeric', 
-            year: 'numeric' 
-          })}
-        </Text>
+        {/* Quick Log for Today Section */}
+        {isToday && (
+          <View style={styles.quickLogContainer}>
+            <Text style={styles.quickLogTitle}>⚡ Quick Log for Today</Text>
+            <Text style={styles.quickLogDate}>{today.toLocaleDateString('en-US', { 
+              weekday: 'long', 
+              month: 'long', 
+              day: 'numeric' 
+            })}</Text>
+            
+            {todayAttendance ? (
+              <View style={styles.todayLoggedContainer}>
+                <Text style={styles.todayLoggedIcon}>✅</Text>
+                <Text style={styles.todayLoggedText}>
+                  Already logged as {todayAttendance === 'office' ? '🏢 Office' : 
+                                   todayAttendance === 'wfh' ? '🏠 Work From Home' : '🏖️ Leave'}
+                </Text>
+                <View style={styles.logActionButtons}>
+                  <TouchableOpacity
+                    style={styles.changeLogButton}
+                    onPress={() => {
+                      Alert.alert(
+                        'Change Today\'s Log',
+                        'What would you like to change it to?',
+                        [
+                          { text: '🏢 Office', onPress: () => markAttendance(todayStr, 'office') },
+                          { text: '🏠 WFH', onPress: () => markAttendance(todayStr, 'wfh') },
+                          { text: '🏖️ Leave', onPress: () => markAttendance(todayStr, 'leave') },
+                          { text: 'Cancel', style: 'cancel' }
+                        ]
+                      );
+                    }}
+                  >
+                    <Text style={styles.changeLogText}>Change</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={styles.clearLogButton}
+                    onPress={() => {
+                      Alert.alert(
+                        'Clear Today\'s Log',
+                        'Are you sure you want to remove this attendance entry? This action cannot be undone.',
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          { 
+                            text: 'Clear Log', 
+                            style: 'destructive', 
+                            onPress: () => clearAttendance(todayStr)
+                          }
+                        ]
+                      );
+                    }}
+                  >
+                    <Text style={styles.clearLogText}>Clear</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : isWeekendDate(todayStr) ? (
+              <View style={styles.todayWeekendContainer}>
+                <Text style={styles.todayWeekendText}>🌴 Weekend - No logging needed</Text>
+              </View>
+            ) : (
+              <View style={styles.quickLogButtons}>
+                <TouchableOpacity
+                  style={[styles.quickLogButton, styles.quickOfficeButton]}
+                  onPress={() => markAttendance(todayStr, 'office')}
+                >
+                  <Text style={styles.quickLogIcon}>🏢</Text>
+                  <Text style={styles.quickLogButtonText}>Office</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.quickLogButton, styles.quickWfhButton]}
+                  onPress={() => markAttendance(todayStr, 'wfh')}
+                >
+                  <Text style={styles.quickLogIcon}>🏠</Text>
+                  <Text style={styles.quickLogButtonText}>WFH</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity
+                  style={[styles.quickLogButton, styles.quickLeaveButton]}
+                  onPress={() => markAttendance(todayStr, 'leave')}
+                >
+                  <Text style={styles.quickLogIcon}>🏖️</Text>
+                  <Text style={styles.quickLogButtonText}>Leave</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        )}
+        
+        {/* Date Selection Header - Only show when not today */}
+        {!isToday && (
+          <View style={styles.dateSelectionHeader}>
+            <Text style={styles.homeTitle}>📅 Log for Different Date</Text>
+            <Text style={styles.homeDate}>
+              {selectedDate.toLocaleDateString('en-US', { 
+                weekday: 'long',
+                month: 'long', 
+                day: 'numeric', 
+                year: 'numeric' 
+              })}
+            </Text>
+          </View>
+        )}
         
         {/* View Toggle */}
         {/* Monthly Target Progress - Moved to top for better UX */}
@@ -1750,9 +2965,9 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               <TouchableOpacity 
                 style={styles.dateSelectorButton}
                 onPress={() => {
-                  const newDate = new Date(selectedDate);
-                  newDate.setDate(newDate.getDate() - 1);
-                  setSelectedLogDate(newDate.toISOString().split('T')[0]);
+                  const currentDate = new Date(selectedLogDate);
+                  currentDate.setDate(currentDate.getDate() - 1);
+                  setSelectedLogDate(getLocalDateString(currentDate));
                 }}
               >
                 <Text style={styles.dateNavText}>‹</Text>
@@ -1770,9 +2985,9 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               <TouchableOpacity 
                 style={styles.dateSelectorButton}
                 onPress={() => {
-                  const newDate = new Date(selectedDate);
-                  newDate.setDate(newDate.getDate() + 1);
-                  setSelectedLogDate(newDate.toISOString().split('T')[0]);
+                  const currentDate = new Date(selectedLogDate);
+                  currentDate.setDate(currentDate.getDate() + 1);
+                  setSelectedLogDate(getLocalDateString(currentDate));
                 }}
               >
                 <Text style={styles.dateNavText}>›</Text>
@@ -1785,18 +3000,37 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             <Text style={styles.multiSelectHint}>Tap days to select/deselect. Selected: {selectedDates.length}</Text>
             {renderHomeCalendar()}
             {selectedDates.length > 0 && (
-              <TouchableOpacity 
-                style={styles.clearSelectionButton}
-                onPress={() => setSelectedDates([])}
-              >
-                <Text style={styles.clearSelectionText}>Clear Selection</Text>
-              </TouchableOpacity>
+              <View style={styles.selectionActionsContainer}>
+                <TouchableOpacity 
+                  style={styles.clearSelectionButton}
+                  onPress={() => setSelectedDates([])}
+                >
+                  <Text style={styles.clearSelectionText}>Clear Selection</Text>
+                </TouchableOpacity>
+                
+                <Text style={styles.selectionCountText}>
+                  {selectedDates.length} {selectedDates.length === 1 ? 'day' : 'days'} selected
+                </Text>
+                
+                <TouchableOpacity 
+                  style={styles.bulkLogButton}
+                  onPress={() => {
+                    // Scroll to the log buttons
+                    Alert.alert(
+                      'Bulk Log Attendance',
+                      'Select Office, WFH, or Leave below to log all selected dates.'
+                    );
+                  }}
+                >
+                  <Text style={styles.bulkLogButtonText}>Log Selected ↓</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
         )}
 
-        {/* Current Status */}
-        {currentAttendance && (
+        {/* Current Status - Only show in single day view */}
+        {currentAttendance && homeView === 'single' && (
           <View style={styles.currentStatusContainer}>
             <Text style={styles.currentStatusTitle}>Current Status</Text>
             <View style={[styles.statusBadge, styles[`${currentAttendance}Badge`]]}>
@@ -1805,6 +3039,46 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                  currentAttendance === 'wfh' ? '🏠 Work From Home' : '🏖️ Leave'}
               </Text>
             </View>
+            
+            <View style={styles.logActionButtons}>
+              <TouchableOpacity
+                style={styles.changeLogButton}
+                onPress={() => {
+                  Alert.alert(
+                    'Change Attendance',
+                    `What would you like to change ${selectedLogDate === getTodayString() ? 'today\'s' : 'this'} log to?`,
+                    [
+                      { text: '🏢 Office', onPress: () => markAttendance(selectedLogDate, 'office') },
+                      { text: '🏠 WFH', onPress: () => markAttendance(selectedLogDate, 'wfh') },
+                      { text: '🏖️ Leave', onPress: () => markAttendance(selectedLogDate, 'leave') },
+                      { text: 'Cancel', style: 'cancel' }
+                    ]
+                  );
+                }}
+              >
+                <Text style={styles.changeLogText}>Change</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={styles.clearLogButton}
+                onPress={() => {
+                  Alert.alert(
+                    'Clear Attendance Log',
+                    `Are you sure you want to remove the attendance entry for ${selectedLogDate === getTodayString() ? 'today' : selectedLogDate}? This action cannot be undone.`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { 
+                        text: 'Clear Log', 
+                        style: 'destructive', 
+                        onPress: () => clearAttendance(selectedLogDate)
+                      }
+                    ]
+                  );
+                }}
+              >
+                <Text style={styles.clearLogText}>Clear</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
 
@@ -1812,9 +3086,21 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
         {/* Attendance Options */}
         <View style={styles.attendanceContainer}>
-          <Text style={styles.sectionTitle}>
-            {homeView === 'single' ? 'Log Attendance' : `Log Attendance (${selectedDates.length} days selected)`}
-          </Text>
+          {homeView === 'single' ? (
+            <Text style={styles.sectionTitle}>Log Attendance</Text>
+          ) : selectedDates.length > 0 ? (
+            <View style={styles.bulkLogHeaderContainer}>
+              <Text style={styles.bulkLogTitle}>📅 Bulk Log Attendance</Text>
+              <Text style={styles.bulkLogSubtitle}>
+                Apply the same status to {selectedDates.length} selected {selectedDates.length === 1 ? 'day' : 'days'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.bulkLogHeaderContainer}>
+              <Text style={styles.sectionTitle}>Select Days to Log</Text>
+              <Text style={styles.bulkLogHint}>Tap on calendar days above to select them for bulk logging</Text>
+            </View>
+          )}
 
           {/* Weekend Restriction Message */}
           {isWeekend && homeView === 'single' ? (
@@ -1952,11 +3238,13 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         
         <View style={styles.weeklyDaysContainer}>
           {weekDays.map((date, index) => {
-            const dateStr = date.toISOString().split('T')[0];
+            // Use manual formatting to avoid timezone issues
+            const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
             const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
             const dayNum = date.getDate();
-            const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-            const isToday = dateStr === today.toISOString().split('T')[0];
+            const isWeekend = isWeekendDate(dateStr);
+            const isToday = dateStr === todayStr;
             const isPlanned = plannedDays[dateStr] === 'office';
             
             return (
@@ -2007,7 +3295,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
       
       if (plannedDays[dateStr] === 'office') {
         weeklyPlan.push(`${dayName} - 🏢 Office`);
-      } else if (date.getDay() === 0 || date.getDay() === 6) {
+      } else if (isWeekendDate(dateStr)) {
         weeklyPlan.push(`${dayName} - 🌴 Weekend`);
       } else {
         weeklyPlan.push(`${dayName} - 🏠 WFH`);
@@ -2114,8 +3402,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
   // ANALYTICS SCREEN
   const renderHomeCalendar = () => {
     const today = new Date();
-    const currentMonth = today.getMonth();
-    const currentYear = today.getFullYear();
+    const currentMonth = homeCalendarMonth.getMonth();
+    const currentYear = homeCalendarMonth.getFullYear();
     const firstDay = new Date(currentYear, currentMonth, 1).getDay();
     const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
     
@@ -2132,6 +3420,12 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
       days.push(day);
     }
     
+    // Add empty cells to complete the last week (ensure 7 days per row)
+    const totalCells = Math.ceil(days.length / 7) * 7;
+    while (days.length < totalCells) {
+      days.push(null);
+    }
+    
     // Group days into weeks
     for (let i = 0; i < days.length; i += 7) {
       weeks.push(days.slice(i, i + 7));
@@ -2140,9 +3434,23 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     return (
       <View style={styles.homeCalendar}>
         <View style={styles.calendarHeader}>
+          <TouchableOpacity 
+            onPress={() => setHomeCalendarMonth(new Date(homeCalendarMonth.getFullYear(), homeCalendarMonth.getMonth() - 1, 1))}
+            style={styles.monthNavButton}
+          >
+            <Text style={styles.monthNavText}>‹</Text>
+          </TouchableOpacity>
+          
           <Text style={styles.calendarMonthTitle}>
-            {today.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+            {homeCalendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           </Text>
+          
+          <TouchableOpacity 
+            onPress={() => setHomeCalendarMonth(new Date(homeCalendarMonth.getFullYear(), homeCalendarMonth.getMonth() + 1, 1))}
+            style={styles.monthNavButton}
+          >
+            <Text style={styles.monthNavText}>›</Text>
+          </TouchableOpacity>
         </View>
         
         <View style={styles.dayHeaders}>
@@ -2157,9 +3465,12 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               if (!day) return <View key={dayIndex} style={styles.calendarDayEmpty} />;
               
               const date = new Date(currentYear, currentMonth, day);
-              const dateStr = date.toISOString().split('T')[0];
-              const isToday = dateStr === today.toISOString().split('T')[0];
-              const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+              // Use manual formatting to avoid timezone issues
+              const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+              const isToday = dateStr === todayStr;
+              const isWeekend = isWeekendDate(dateStr);
+              const isHoliday = getPublicHolidays(userData.country || 'australia').includes(dateStr);
               const isSelected = selectedDates.includes(dateStr);
               const attendance = attendanceData[dateStr];
               
@@ -2171,15 +3482,23 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                     isToday && styles.calendarDayToday,
                     isSelected && styles.calendarDaySelected,
                     isWeekend && styles.calendarDayWeekend,
+                    isHoliday && styles.calendarDayHoliday,
                     attendance === 'office' && styles.calendarDayOffice,
                     attendance === 'wfh' && styles.calendarDayWFH,
                     attendance === 'leave' && styles.calendarDayLeave,
                   ]}
                   onPress={() => {
-                    if (isSelected) {
-                      setSelectedDates(selectedDates.filter(d => d !== dateStr));
+                    if (isHoliday) {
+                      const holidayName = getHolidayName(dateStr, userData.country);
+                      Alert.alert('🌲 Public Holiday', `${holidayName}\n\nYou cannot select public holidays.`);
+                    } else if (isWeekend) {
+                      Alert.alert('🏖️ Weekend', 'You cannot select weekends.');
                     } else {
-                      setSelectedDates([...selectedDates, dateStr]);
+                      if (isSelected) {
+                        setSelectedDates(selectedDates.filter(d => d !== dateStr));
+                      } else {
+                        setSelectedDates([...selectedDates, dateStr]);
+                      }
                     }
                   }}
                 >
@@ -2188,10 +3507,14 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                     isToday && styles.calendarDayTextToday,
                     isSelected && styles.calendarDayTextSelected,
                     isWeekend && styles.calendarDayTextWeekend,
+                    isHoliday && styles.calendarDayTextHoliday,
                   ]}>
                     {day}
                   </Text>
-                  {attendance && (
+                  {isHoliday && (
+                    <Text style={styles.calendarHolidayIndicator}>🌲</Text>
+                  )}
+                  {attendance && !isHoliday && (
                     <Text style={styles.calendarDayAttendance}>
                       {attendance === 'office' ? '🏢' : attendance === 'wfh' ? '🏠' : '🌴'}
                     </Text>
@@ -2234,7 +3557,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
       const dateStr = d.toISOString().split('T')[0];
       const dayOfWeek = d.getDay();
       
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Skip weekends
+      if (!isWeekendDate(dateStr)) { // Skip weekends
         totalWorkDays++;
         const attendance = attendanceData[dateStr];
         if (attendance === 'office') {
@@ -2359,7 +3682,11 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
   // SETTINGS SCREEN
   const renderSettingsScreen = () => {
     return (
-      <View style={styles.settingsContainer}>
+      <ScrollView 
+        style={styles.settingsContainer}
+        contentContainerStyle={styles.settingsScrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         <Text style={styles.settingsTitle}>⚙️ Settings</Text>
         
         {/* Pro Version Banner */}
@@ -2402,6 +3729,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             <Text style={styles.settingsItemArrow}>›</Text>
           </TouchableOpacity>
 
+
+
           <TouchableOpacity style={styles.settingsItem}>
             <Text style={styles.settingsItemIcon}>🔔</Text>
             <Text style={styles.settingsItemText}>Notifications</Text>
@@ -2430,17 +3759,60 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                     onPress: async () => {
                       const updatedData = { ...userData, trackingMode: 'manual' };
                       setUserData(updatedData);
-                      await AsyncStorage.setItem('@user_data', JSON.stringify(updatedData));
-                      Alert.alert('✅ Updated', 'Tracking mode changed to Manual Entry');
+                      await AsyncStorage.setItem('userData', JSON.stringify(updatedData));
+                      
+                      // Small delay to prevent rapid successive calls during mode switching
+                      await new Promise(resolve => setTimeout(resolve, 500));
+                      
+                      // Setup manual notifications
+                      await setupManualNotifications();
+                      
+                      Alert.alert(
+                        '✅ Switched to Manual', 
+                        'You\'ll now receive 3 daily reminders on weekdays:\n• 10am: Morning check-in\n• 1pm: Afternoon check-in\n• 4pm: End of day reminder'
+                      );
                     }
                   },
                   { 
                     text: '🤖 Smart Auto', 
                     onPress: async () => {
+                      // Check if location permission is already granted
+                      const currentPermissions = await Location.getForegroundPermissionsAsync();
+                      
+                      let permissionStatus = currentPermissions.status;
+                      
+                      // Only show disclosure and request permission if not already granted
+                      if (permissionStatus !== 'granted') {
+                        // Show prominent disclosure before requesting location permission
+                        await showLocationPermissionDisclosure();
+
+                        // Request location permission
+                        const { status } = await Location.requestForegroundPermissionsAsync();
+                        permissionStatus = status;
+                      }
+                      
+                      if (permissionStatus !== 'granted') {
+                        Alert.alert(
+                          'Location Required',
+                          'Auto mode needs location permission to detect when you\'re at office. Please enable location access in your device settings.'
+                        );
+                        return;
+                      }
+                      
                       const updatedData = { ...userData, trackingMode: 'auto' };
                       setUserData(updatedData);
-                      await AsyncStorage.setItem('@user_data', JSON.stringify(updatedData));
-                      Alert.alert('✅ Updated', 'Tracking mode changed to Smart Auto');
+                      await AsyncStorage.setItem('userData', JSON.stringify(updatedData));
+                      
+                      // Small delay to prevent rapid successive calls during mode switching
+                      await new Promise(resolve => setTimeout(resolve, 500));
+                      
+                      // Setup auto tracking
+                      await setupAutoTracking(updatedData);
+                      
+                      Alert.alert(
+                        '✅ Switched to Smart Auto', 
+                        'Location-based tracking is now active. The app will automatically detect when you\'re at office.'
+                      );
                     }
                   }
                 ]
@@ -2450,6 +3822,47 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             <Text style={styles.settingsItemIcon}>📱</Text>
             <Text style={styles.settingsItemText}>Tracking Mode</Text>
             <Text style={styles.settingsItemValue}>{userData.trackingMode === 'auto' ? 'Smart Auto' : 'Manual Entry'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.settingsItem}
+            onPress={() => {
+              const countryData = COUNTRY_DATA[userData.country || 'australia'];
+              const currentYear = new Date().getFullYear();
+              const cacheKey = getHolidayCacheKey(userData.country || 'australia', currentYear);
+              const lastUpdate = holidayLastUpdated[cacheKey];
+              const isValid = isCacheValid(userData.country || 'australia', currentYear, holidayLastUpdated);
+              
+              let statusText = '';
+              if (lastUpdate) {
+                const updateDate = new Date(lastUpdate).toLocaleDateString();
+                statusText = `\nHolidays last updated: ${updateDate}${isValid ? ' ✅' : ' (outdated)'}`;
+              } else {
+                statusText = '\nHolidays: Using static data 📋';
+              }
+              
+              Alert.alert(
+                '🌍 Location & Holidays',
+                `Detected Country: ${countryData.name}\n\nPublic holidays and company suggestions are customized for ${countryData.name}.${statusText}`,
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { 
+                    text: '🔄 Refresh Holidays', 
+                    onPress: () => {
+                      updateCurrentYearHolidays(userData.country || 'australia');
+                      Alert.alert('Holiday Update', 'Refreshing public holidays data...');
+                    }
+                  }
+                ]
+              );
+            }}
+          >
+            <Text style={styles.settingsItemIcon}>🌍</Text>
+            <Text style={styles.settingsItemText}>Location & Holidays</Text>
+            <View style={styles.settingsItemRightContainer}>
+              <Text style={styles.settingsItemValue}>{COUNTRY_DATA[userData.country || 'australia']?.name || 'Australia'}</Text>
+              {isLoadingHolidays && <Text style={styles.settingsItemBadge}>Updating...</Text>}
+            </View>
           </TouchableOpacity>
         </View>
 
@@ -2500,7 +3913,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             <Text style={styles.resetButtonText}>🗑️ Erase & Reset</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </ScrollView>
     );
   };
 
@@ -2542,6 +3955,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     );
   };
 
+
+
   // MAIN RENDER
   const renderMainApp = () => {
     return (
@@ -2558,6 +3973,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
         {/* Bottom Navigation */}
         {renderBottomNavigation()}
+
+
 
         {/* Modals */}
         {showStats && (
@@ -2688,10 +4105,13 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
   if (screen === 'loading') {
     return (
-      <View style={styles.loadingContainer}>
-        <Text style={styles.loadingEmoji}>📅</Text>
-        <ActivityIndicator size="large" color="#4F46E5" style={{ marginTop: 20 }} />
-        <Text style={styles.loadingText}>Setting up OfficeTrack...</Text>
+      <View style={styles.splashContainer}>
+        <RNStatusBar barStyle="light-content" backgroundColor="#FFD700" />
+        <Image 
+          source={require('./assets/splash.png')} 
+          style={styles.splashImage}
+          resizeMode="cover"
+        />
       </View>
     );
   }
@@ -2809,20 +4229,42 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
     const handleAddressSelect = (address) => {
       setAddressSearchText(address.address);
+      
+      // Detect country for holiday calendar and company suggestions
+      let country = 'australia'; // default
+      const countryName = address.country?.toLowerCase() || '';
+      
+      if (countryName.includes('india')) country = 'india';
+      else if (countryName.includes('united states') || countryName.includes('usa')) country = 'usa';
+      else if (countryName.includes('united kingdom') || countryName.includes('uk') || countryName.includes('great britain')) country = 'uk';
+      else if (countryName.includes('canada')) country = 'canada';
+      else if (countryName.includes('australia')) country = 'australia';
+      
       setUserData({
         ...userData,
         companyLocation: { latitude: address.lat, longitude: address.lon },
         companyAddress: address.address,
-        country: address.country?.toLowerCase().includes('india') ? 'india' : 
-                address.country?.toLowerCase().includes('united states') ? 'usa' : 'australia'
+        country
       });
       setShowAddressDropdown(false);
       setAddressSuggestions([]);
     };
 
     const handleUseCurrentLocation = async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
+      // Check if location permission is already granted
+      const currentPermissions = await Location.getForegroundPermissionsAsync();
+      
+      let permissionStatus = currentPermissions.status;
+      
+      // Only show disclosure and request permission if not already granted
+      if (permissionStatus !== 'granted') {
+        // Show prominent disclosure before requesting location permission
+        await showLocationPermissionDisclosure();
+        
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        permissionStatus = status;
+      }
+      if (permissionStatus !== 'granted') {
         Alert.alert('Permission Required', 'Please enable location to set office address');
         return;
       }
@@ -2845,10 +4287,15 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             address[0].country
           ].filter(Boolean).join(', ');
           
-          // Detect country for holiday calendar
-          let country = 'australia';
-          if (address[0].country?.toLowerCase().includes('india')) country = 'india';
-          if (address[0].country?.toLowerCase().includes('united states')) country = 'usa';
+          // Detect country for holiday calendar and company suggestions
+          let country = 'australia'; // default
+          const countryName = address[0].country?.toLowerCase() || '';
+          
+          if (countryName.includes('india')) country = 'india';
+          else if (countryName.includes('united states') || countryName.includes('usa')) country = 'usa';
+          else if (countryName.includes('united kingdom') || countryName.includes('uk') || countryName.includes('great britain')) country = 'uk';
+          else if (countryName.includes('canada')) country = 'canada';
+          else if (countryName.includes('australia')) country = 'australia';
           
           setAddressSearchText(fullAddress);
           setLocationSet(true);
@@ -2960,6 +4407,9 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Office Address</Text>
+          <Text style={styles.inputHint}>
+            📍 Your address will help us customize public holidays and company suggestions for your region
+          </Text>
           
           <TextInput
             style={styles.input}
@@ -3125,7 +4575,24 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             const proceedWithSetup = async () => {
               // Request permissions based on selected mode
               if (userData.trackingMode === 'auto') {
-                const locStatus = await Location.requestForegroundPermissionsAsync();
+                // Check if location permission is already granted
+                const currentPermissions = await Location.getForegroundPermissionsAsync();
+                
+                let locStatus = currentPermissions;
+                
+                // Only show disclosure and request permission if not already granted
+                if (currentPermissions.status !== 'granted') {
+                  // Show prominent disclosure before requesting location permission
+                  await showLocationPermissionDisclosure();
+
+                  // Request background location for scheduled checks
+                  locStatus = await Location.requestBackgroundPermissionsAsync();
+                  
+                  // If background denied, try foreground only
+                  if (locStatus.status !== 'granted') {
+                    locStatus = await Location.requestForegroundPermissionsAsync();
+                  }
+                }
                 if (locStatus.status !== 'granted') {
                   Alert.alert(
                     'Location Permission Required',
@@ -3146,19 +4613,24 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 }
               }
 
-              // Request notification permission
-              const notifStatus = await Notifications.requestPermissionsAsync();
-              if (notifStatus.status !== 'granted') {
-                Alert.alert(
-                  'Notification Permission',
-                  'We need notification permission to send you reminders. You can enable this in your phone settings later.'
-                );
+              // Request notification permission (only on native platforms)
+              if (Platform.OS !== 'web') {
+                const notifStatus = await Notifications.requestPermissionsAsync();
+                if (notifStatus.status !== 'granted') {
+                  Alert.alert(
+                    'Notification Permission',
+                    'We need notification permission to send you reminders. You can enable this in your phone settings later.'
+                  );
+                }
               }
 
               // Save user data and initialize
               const finalUserData = { ...userData, userId: await getOrCreateUserId() };
               await AsyncStorage.setItem('userData', JSON.stringify(finalUserData));
               setUserData(finalUserData);
+
+              // Save setup completion timestamp to prevent auto-WFH notifications for new users
+              await AsyncStorage.setItem('setupCompletedTime', Date.now().toString());
 
               // Set up tracking based on mode
               if (userData.trackingMode === 'manual') {
@@ -3167,16 +4639,12 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 await setupAutoTracking(finalUserData);
               }
 
-              // Initialize with some sample data for demo
-              const sampleAttendance = {
-                '2024-10-21': 'office',
-                '2024-10-22': 'wfh',
-                '2024-10-23': 'office',
-              };
-              setAttendanceData(sampleAttendance);
-              await AsyncStorage.setItem('attendanceData', JSON.stringify(sampleAttendance));
+              // Navigate to home screen - no sample data for new users
+              setScreen('home');
+              setActiveTab('home');
+              
+              // Show onboarding tutorial for new users
 
-              setScreen('calendar');
             };
 
             // First check if user has set a monthly target
@@ -3252,7 +4720,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                   );
                 }}
               >
-                <Text style={styles.resetButton}>🔄 Reset</Text>
+                <Text style={styles.resetTextButton}>🔄 Reset</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -3380,15 +4848,25 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                   disabled={item.isEmpty}
                   onPress={() => {
                     if (!item.isEmpty) {
-                      setSelectedDay(item);
-                      setShowModal(true);
+                      if (item.isHoliday) {
+                        const holidayName = getHolidayName(item.date, userData.country);
+                        Alert.alert('🌲 Public Holiday', `${holidayName}\n\nYou cannot log attendance on public holidays.`);
+                      } else if (item.isWeekend) {
+                        Alert.alert('🏖️ Weekend', 'You cannot log attendance on weekends.');
+                      } else {
+                        setSelectedDay(item);
+                        setShowModal(true);
+                      }
                     }
                   }}
                 >
                   {!item.isEmpty && (
-                    <Text style={[styles.dayText, { color: getTextColor(item) }]}>
-                      {item.day}
-                    </Text>
+                    <View style={styles.calendarDayContent}>
+                      <Text style={[styles.dayText, { color: getTextColor(item) }]}>
+                        {item.day}
+                      </Text>
+                      {item.isHoliday && <Text style={styles.calendarHolidayIndicator}>🌲</Text>}
+                    </View>
                   )}
                 </TouchableOpacity>
               ))}
@@ -3640,7 +5118,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     );
   }
 
-  return null;
+  // Default case - render main app (home screen)
+  return renderMainApp();
 }
 
 // Helper Components
@@ -3720,6 +5199,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFD700',
     marginTop: 16,
+  },
+
+  // Splash Screen
+  splashContainer: {
+    flex: 1,
+    backgroundColor: '#FFD700',
+  },
+  splashImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
   },
 
   // Welcome Screen
@@ -3825,6 +5315,12 @@ const styles = StyleSheet.create({
     color: '#FFD700',
     marginBottom: 8,
   },
+  inputHint: {
+    fontSize: 12,
+    color: '#888888',
+    marginBottom: 8,
+    fontStyle: 'italic',
+  },
   input: {
     backgroundColor: '#1A1A1A',
     borderWidth: 1,
@@ -3843,12 +5339,16 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 12,
     maxHeight: 250,
     marginTop: -1,
-    zIndex: 1000,
-    elevation: 10,
+    zIndex: 9999,
+    elevation: 20,
     position: 'absolute',
     top: '100%',
     left: 0,
     right: 0,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
   },
   dropdownItem: {
     padding: 15,
@@ -4039,7 +5539,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 8,
   },
-  resetButton: {
+  resetTextButton: {
     fontSize: 14,
     color: 'white',
     backgroundColor: 'rgba(255,255,255,0.15)',
@@ -4878,7 +6378,7 @@ const styles = StyleSheet.create({
   },
   bottomNavIcon: {
     fontSize: 24,
-    color: '#666666',
+    color: '#CCCCCC',
     marginBottom: 4,
   },
   bottomNavIconActive: {
@@ -4886,7 +6386,7 @@ const styles = StyleSheet.create({
   },
   bottomNavLabel: {
     fontSize: 11,
-    color: '#666666',
+    color: '#CCCCCC',
     fontWeight: '500',
   },
   bottomNavLabelActive: {
@@ -4911,6 +6411,124 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#CCCCCC',
     textAlign: 'center',
+    marginBottom: 20,
+  },
+  
+  // Quick Log Styles
+  quickLogContainer: {
+    backgroundColor: '#2A2A2A',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 24,
+    borderWidth: 2,
+    borderColor: '#FFD700',
+  },
+  quickLogTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#FFD700',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  quickLogDate: {
+    fontSize: 16,
+    color: '#CCCCCC',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  quickLogButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  quickLogButton: {
+    flex: 1,
+    backgroundColor: '#374151',
+    borderRadius: 15,
+    paddingVertical: 16,
+    alignItems: 'center',
+    borderWidth: 2,
+  },
+  quickOfficeButton: {
+    borderColor: '#10B981',
+  },
+  quickWfhButton: {
+    borderColor: '#3B82F6',
+  },
+  quickLeaveButton: {
+    borderColor: '#F59E0B',
+  },
+  quickLogIcon: {
+    fontSize: 24,
+    marginBottom: 4,
+  },
+  quickLogButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  
+  // Today Already Logged
+  todayLoggedContainer: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  todayLoggedIcon: {
+    fontSize: 32,
+    marginBottom: 8,
+  },
+  todayLoggedText: {
+    color: '#10B981',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  logActionButtons: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  changeLogButton: {
+    backgroundColor: '#FFD700',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    flex: 1,
+    alignItems: 'center',
+  },
+  changeLogText: {
+    color: '#1A1A1A',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  clearLogButton: {
+    backgroundColor: '#EF4444',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 10,
+    flex: 1,
+    alignItems: 'center',
+  },
+  clearLogText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  
+  // Today Weekend
+  todayWeekendContainer: {
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  todayWeekendText: {
+    color: '#9CA3AF',
+    fontSize: 16,
+    fontStyle: 'italic',
+  },
+  
+  // Date Selection Header
+  dateSelectionHeader: {
     marginBottom: 20,
   },
   weekendBadge: {
@@ -4995,7 +6613,11 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   calendarHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 16,
+    paddingHorizontal: 10,
   },
   calendarMonthTitle: {
     fontSize: 18,
@@ -5032,6 +6654,9 @@ const styles = StyleSheet.create({
   calendarDayWeekend: {
     backgroundColor: '#333333',
   },
+  calendarDayHoliday: {
+    backgroundColor: '#4A1A1A',
+  },
   calendarDayOffice: {
     backgroundColor: '#4CAF50',
   },
@@ -5055,6 +6680,20 @@ const styles = StyleSheet.create({
   calendarDayTextWeekend: {
     color: '#CCCCCC',
   },
+  calendarDayTextHoliday: {
+    color: '#FFCCCC',
+  },
+  calendarDayContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  calendarHolidayIndicator: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    fontSize: 10,
+  },
   calendarDayAttendance: {
     position: 'absolute',
     bottom: 2,
@@ -5073,6 +6712,57 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  
+  // Selection Actions
+  selectionActionsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 16,
+    paddingHorizontal: 8,
+  },
+  selectionCountText: {
+    color: '#FFD700',
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+    textAlign: 'center',
+  },
+  bulkLogButton: {
+    backgroundColor: '#FFD700',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  bulkLogButtonText: {
+    color: '#1A1A1A',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  
+  // Bulk Log Header
+  bulkLogHeaderContainer: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  bulkLogTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFD700',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  bulkLogSubtitle: {
+    fontSize: 14,
+    color: '#CCCCCC',
+    textAlign: 'center',
+  },
+  bulkLogHint: {
+    fontSize: 14,
+    color: '#999999',
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
   sectionTitle: {
     fontSize: 18,
@@ -5536,10 +7226,6 @@ const styles = StyleSheet.create({
     marginRight: 12,
     overflow: 'hidden',
   },
-  progressFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
   attendanceCardPercentage: {
     fontSize: 14,
     fontWeight: 'bold',
@@ -5566,6 +7252,9 @@ const styles = StyleSheet.create({
   // Settings Screen
   settingsContainer: {
     flex: 1,
+    backgroundColor: '#000000',
+  },
+  settingsScrollContent: {
     padding: 20,
     paddingBottom: Platform.OS === 'ios' ? 120 : 100,
   },
@@ -5636,16 +7325,23 @@ const styles = StyleSheet.create({
     color: '#FFD700',
     fontWeight: '600',
   },
+  settingsItemRightContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   resetSection: {
-    flex: 1,
-    justifyContent: 'flex-end',
+    marginTop: 30,
+    paddingBottom: 40,
   },
   resetButton: {
     backgroundColor: '#EF4444',
     paddingVertical: 16,
+    paddingHorizontal: 20,
     borderRadius: 12,
     alignItems: 'center',
     marginBottom: 20,
+    minHeight: 52,
   },
   resetButtonText: {
     color: '#FFFFFF',
@@ -5723,6 +7419,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
   },
+
+
 
   // Utilities
   bottomPadding: {
