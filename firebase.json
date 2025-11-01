@@ -1,27 +1,36 @@
 {
   "hosting": {
-    "public": "dist",
+    "public": "web-dashboard",
     "ignore": [
       "firebase.json",
       "**/.*",
-      "**/node_modules/**"
+      "**/node_modules/**",
+      "**/*.md"
     ],
     "rewrites": [
       {
-        "source": "/privacy",
-        "destination": "/privacy.html"
-      },
-      {
-        "source": "/terms",
-        "destination": "/terms.html"
-      },
-      {
-        "source": "/contact",
-        "destination": "/contact.html"
-      },
-      {
         "source": "**",
         "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|css)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(png|jpg|jpeg|gif|webp|svg|PNG|JPG|JPEG)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "max-age=31536000"
+          }
+        ]
       }
     ]
   }

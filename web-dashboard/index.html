@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OfficeTrack - Hybrid Work Attendance Tracker</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <nav class="nav">
+            <div class="nav-brand">
+                <div class="logo">
+                    <span class="logo-text">OFFICE</span>
+                    <span class="logo-highlight">TRACK</span>
+                </div>
+            </div>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#screenshots">Screenshots</a>
+                <a href="#download" class="cta-button">Download Now</a>
+            </div>
+        </nav>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-content">
+            <div class="hero-text">
+                <h1>OFFICE HYBRID TRACKER</h1>
+                <p class="hero-subtitle">Your simple hybrid work attendance tracker</p>
+                <p class="hero-description">Track office days effortlessly, set goals, and get insights about your hybrid work patterns. Free, private, and designed for modern flexible work.</p>
+                
+                <div class="hero-features">
+                    <div class="feature-item">
+                        <i class="fas fa-check"></i>
+                        <span>Track office days effortlessly</span>
+                    </div>
+                    <div class="feature-item">
+                        <i class="fas fa-chart-bar"></i>
+                        <span>Monthly attendance insights</span>
+                    </div>
+                    <div class="feature-item">
+                        <i class="fas fa-target"></i>
+                        <span>Set and achieve office day targets</span>
+                    </div>
+                    <div class="feature-item">
+                        <i class="fas fa-bell"></i>
+                        <span>Smart notifications and reminders</span>
+                    </div>
+                    <div class="feature-item">
+                        <i class="fas fa-shield-alt"></i>
+                        <span>Completely free to use</span>
+                    </div>
+                </div>
+
+                <div class="download-buttons">
+                    <a href="https://apps.apple.com/app/hybrid-office-tracker/id6754510381" class="download-btn ios" target="_blank">
+                        <i class="fab fa-apple"></i>
+                        <div>
+                            <span class="small">Download on the</span>
+                            <span class="big">App Store</span>
+                        </div>
+                    </a>
+                    <a href="https://play.google.com/store/apps/details?id=com.officetrack.app&pcampaignid=web_share" class="download-btn android" target="_blank">
+                        <i class="fab fa-google-play"></i>
+                        <div>
+                            <span class="small">Get it on</span>
+                            <span class="big">Google Play</span>
+                        </div>
+                    </a>
+                </div>
+            </div>
+            
+            <div class="hero-visual">
+                <div class="phone-mockup">
+                    <div class="slideshow-container">
+                        <div class="slide active">
+                            <img src="assets/screenshots/1.PNG" alt="Welcome Screen" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/2.PNG" alt="Company Setup" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/3.PNG" alt="Tracking Mode Selection" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/4.PNG" alt="Home Dashboard" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/5.PNG" alt="Monthly Planner" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/6.PNG" alt="Weekly Planner" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/7.PNG" alt="Analytics Overview" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/8.PNG" alt="Detailed Analytics" />
+                        </div>
+                        <div class="slide">
+                            <img src="assets/screenshots/9.PNG" alt="Settings" />
+                        </div>
+                        
+                        <!-- Navigation dots -->
+                        <div class="dots-container">
+                            <span class="dot active" onclick="currentSlide(1)"></span>
+                            <span class="dot" onclick="currentSlide(2)"></span>
+                            <span class="dot" onclick="currentSlide(3)"></span>
+                            <span class="dot" onclick="currentSlide(4)"></span>
+                            <span class="dot" onclick="currentSlide(5)"></span>
+                            <span class="dot" onclick="currentSlide(6)"></span>
+                            <span class="dot" onclick="currentSlide(7)"></span>
+                            <span class="dot" onclick="currentSlide(8)"></span>
+                            <span class="dot" onclick="currentSlide(9)"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features">
+        <div class="container">
+            <h2>Why Choose OfficeTrack?</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-hand-paper"></i>
+                    </div>
+                    <h3>Manual Entry</h3>
+                    <p>Perfect for complete control over your data</p>
+                    <ul>
+                        <li>3 daily notifications (10am, 1pm, 4pm)</li>
+                        <li>Quick tap to mark your day</li>
+                        <li>No location tracking needed</li>
+                        <li>Maximum privacy</li>
+                    </ul>
+                    <div class="feature-badge">FREE</div>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h3>Auto Smart Detection</h3>
+                    <p>Let the app detect when you're at office</p>
+                    <ul>
+                        <li>Automatic office detection (hourly check)</li>
+                        <li>Location checked only when needed</li>
+                        <li>Morning reminders for planned days</li>
+                        <li>Hands-free tracking</li>
+                    </ul>
+                    <div class="feature-badge">FREE</div>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-chart-line"></i>
+                    </div>
+                    <h3>Powerful Analytics</h3>
+                    <p>Get insights into your work patterns</p>
+                    <ul>
+                        <li>Monthly attendance breakdown</li>
+                        <li>Office vs WFH statistics</li>
+                        <li>Target progress tracking</li>
+                        <li>Completion insights</li>
+                    </ul>
+                    <div class="feature-badge">FREE</div>
+                </div>
+                
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-calendar-alt"></i>
+                    </div>
+                    <h3>Smart Planning</h3>
+                    <p>Plan and share your office schedule</p>
+                    <ul>
+                        <li>Monthly and weekly views</li>
+                        <li>Share plans with colleagues</li>
+                        <li>Visual calendar interface</li>
+                        <li>Easy schedule management</li>
+                    </ul>
+                    <div class="feature-badge">FREE</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Screenshots Section -->
+    <section id="screenshots" class="screenshots-section">
+        <div class="container">
+            <h2>See OfficeTrack in Action</h2>
+            <p class="section-subtitle">Experience the clean, intuitive interface designed for modern hybrid work</p>
+            
+            <div class="screenshots-gallery">
+                <div class="screenshot-item">
+                    <img src="assets/screenshots/1.PNG" alt="Welcome Screen" />
+                    <div class="screenshot-overlay">
+                        <h4>Welcome Experience</h4>
+                        <p>Clean onboarding flow</p>
+                    </div>
+                </div>
+                <div class="screenshot-item">
+                    <img src="assets/screenshots/2.PNG" alt="Home Dashboard" />
+                    <div class="screenshot-overlay">
+                        <h4>Home Dashboard</h4>
+                        <p>Quick attendance logging</p>
+                    </div>
+                </div>
+                <div class="screenshot-item">
+                    <img src="assets/screenshots/3.PNG" alt="Analytics" />
+                    <div class="screenshot-overlay">
+                        <h4>Smart Analytics</h4>
+                        <p>Insightful progress tracking</p>
+                    </div>
+                </div>
+                <div class="screenshot-item">
+                    <img src="assets/screenshots/4.PNG" alt="Weekly Planner" />
+                    <div class="screenshot-overlay">
+                        <h4>Weekly Planning</h4>
+                        <p>Schedule your office days</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Download Section -->
+    <section id="download" class="download-section">
+        <div class="container">
+            <h2>Ready to Track Your Hybrid Work?</h2>
+            <p>Download OfficeTrack today and take control of your attendance tracking</p>
+            
+            <div class="download-buttons large">
+                <a href="https://apps.apple.com/app/hybrid-office-tracker/id6754510381" class="download-btn ios" target="_blank">
+                    <i class="fab fa-apple"></i>
+                    <div>
+                        <span class="small">Download on the</span>
+                        <span class="big">App Store</span>
+                    </div>
+                </a>
+                <a href="https://play.google.com/store/apps/details?id=com.officetrack.app&pcampaignid=web_share" class="download-btn android" target="_blank">
+                    <i class="fab fa-google-play"></i>
+                    <div>
+                        <span class="small">Get it on</span>
+                        <span class="big">Google Play</span>
+                    </div>
+                </a>
+            </div>
+            
+            <div class="app-features-summary">
+                <div class="feature-highlight">
+                    <i class="fas fa-shield-alt"></i>
+                    <span>100% Free & Private</span>
+                </div>
+                <div class="feature-highlight">
+                    <i class="fas fa-mobile-alt"></i>
+                    <span>iOS & Android</span>
+                </div>
+                <div class="feature-highlight">
+                    <i class="fas fa-clock"></i>
+                    <span>5-Minute Setup</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <div class="logo">
+                        <span class="logo-text">OFFICE</span>
+                        <span class="logo-highlight">TRACK</span>
+                    </div>
+                    <p>Your simple hybrid work attendance tracker</p>
+                </div>
+                
+                <div class="footer-links">
+                    <div class="footer-column">
+                        <h4>Product</h4>
+                        <a href="#features">Features</a>
+                        <a href="#screenshots">Screenshots</a>
+                        <a href="#download">Download</a>
+                    </div>
+                    
+                    <div class="footer-column">
+                        <h4>Legal</h4>
+                        <a href="privacy.html">Privacy Policy</a>
+                        <a href="terms.html">Terms of Service</a>
+                        <a href="contact.html">Contact Us</a>
+                    </div>
+                    
+                    <div class="footer-column">
+                        <h4>Download</h4>
+                        <a href="https://apps.apple.com/app/hybrid-office-tracker/id6754510381" target="_blank">
+                            <i class="fab fa-apple"></i> iOS App
+                        </a>
+                        <a href="https://play.google.com/store/apps/details?id=com.officetrack.app&pcampaignid=web_share" target="_blank">
+                            <i class="fab fa-google-play"></i> Android App
+                        </a>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer-bottom">
+                <p>&copy; 2025 OfficeTrack. All rights reserved. Made with ❤️ for hybrid workers.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
