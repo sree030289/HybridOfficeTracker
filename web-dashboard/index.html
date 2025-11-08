@@ -4,8 +4,43 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OfficeTrack - Hybrid Work Attendance Tracker</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2.0">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    
+    <!-- Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-MEASUREMENTID"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-MEASUREMENTID');
+    </script>
+    
+    <!-- Firebase Analytics -->
+    <script type="module">
+      import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js';
+      import { getAnalytics } from 'https://www.gstatic.com/firebasejs/10.7.0/firebase-analytics.js';
+      
+      const firebaseConfig = {
+        apiKey: "AIzaSyBvH_M5H5fGUjWCN0gCDOT8Pd_5Yq1jKtQ",
+        authDomain: "hybridofficetracker.firebaseapp.com",
+        databaseURL: "https://hybridofficetracker-default-rtdb.firebaseio.com",
+        projectId: "hybridofficetracker",
+        storageBucket: "hybridofficetracker.appspot.com",
+        messagingSenderId: "822621254921",
+        appId: "1:822621254921:web:123abc",
+        measurementId: "G-MEASUREMENTID"
+      };
+      
+      const app = initializeApp(firebaseConfig);
+      const analytics = getAnalytics(app);
+      
+      // Track page views
+      gtag('config', 'G-MEASUREMENTID', {
+        page_title: 'OfficeTrack Landing',
+        page_location: window.location.href
+      });
+    </script>
 </head>
 <body>
     <!-- Header -->

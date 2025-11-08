@@ -28,11 +28,17 @@ function currentSlide(n) {
     slideIndex = n;
     showSlides(slideIndex);
     startAutoSlide();
+    
+    // Track manual slide interaction
+    trackSlideshowInteraction('manual_click', slideIndex);
 }
 
 function nextSlide() {
     slideIndex++;
     showSlides(slideIndex);
+    
+    // Track auto-advance
+    trackSlideshowInteraction('auto_advance', slideIndex);
 }
 
 function startAutoSlide() {
@@ -117,13 +123,41 @@ function toggleMobileMenu() {
 document.querySelectorAll('.download-btn').forEach(button => {
     button.addEventListener('click', function() {
         const platform = this.classList.contains('ios') ? 'iOS' : 'Android';
-        console.log(`Download clicked: ${platform}`);
+        const location = this.closest('.hero') ? 'hero_section' : 
+                        this.closest('.download-section') ? 'download_section' : 'unknown';
         
-        // You can add analytics tracking here
-        // gtag('event', 'download_click', {
-        //     'platform': platform,
-        //     'location': 'hero_section'
-        // });
+        console.log(`Download clicked: ${platform} from ${location}`);
+        
+        // Track download events
+        if (typeof gtag !== 'undefined') {
+            gtag('event', 'download_click', {
+                'event_category': 'App Downloads',
+                'event_label': platform,
+                'custom_parameter_location': location
+            });
+        }
+        
+        // Track to Firebase Analytics if available
+        if (typeof firebase !== 'undefined' && firebase.analytics) {
+            firebase.analytics().logEvent('app_download_attempt', {
+                platform: platform,
+                location: location,
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        // Send to Firebase Realtime Database for your tracking
+        fetch('https://hybridofficetracker-default-rtdb.asia-southeast1.firebasedatabase.app/downloads.json', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                platform: platform,
+                location: location,
+                timestamp: new Date().toISOString(),
+                userAgent: navigator.userAgent,
+                referrer: document.referrer || 'direct'
+            })
+        }).catch(err => console.log('Firebase tracking error:', err));
     });
 });
 
@@ -326,6 +360,12 @@ function addBackToTop() {
 
 // Enhanced page initialization
 document.addEventListener('DOMContentLoaded', function() {
+    // Track page views
+    trackPageView();
+    
+    // Track user engagement
+    trackUserEngagement();
+    
     // Initialize back to top for all pages
     addBackToTop();
     
@@ -433,4 +473,112 @@ function showCopySuccess() {
         successEl.style.animation = 'slideOut 0.3s ease';
         setTimeout(() => successEl.remove(), 300);
     }, 2000);
+}
+
+// Analytics tracking functions
+function trackPageView() {
+    const pageData = {
+        page: window.location.pathname,
+        title: document.title,
+        timestamp: new Date().toISOString(),
+        userAgent: navigator.userAgent,
+        referrer: document.referrer || 'direct',
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+        language: navigator.language
+    };
+    
+    // Send to Firebase for your tracking
+    fetch('https://hybridofficetracker-default-rtdb.asia-southeast1.firebasedatabase.app/page_views.json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pageData)
+    }).catch(err => console.log('Page view tracking error:', err));
+    
+    // Track with Google Analytics if available
+    if (typeof gtag !== 'undefined') {
+        gtag('event', 'page_view', {
+            'event_category': 'Engagement',
+            'page_title': document.title,
+            'page_location': window.location.href
+        });
+    }
+}
+
+function trackUserEngagement() {
+    let startTime = Date.now();
+    let scrollDepth = 0;
+    let maxScrollDepth = 0;
+    
+    // Track scroll depth
+    window.addEventListener('scroll', function() {
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+        scrollDepth = Math.round((scrollTop / docHeight) * 100);
+        maxScrollDepth = Math.max(maxScrollDepth, scrollDepth);
+    });
+    
+    // Track time on page and engagement when user leaves
+    function trackEngagement() {
+        const timeOnPage = Math.round((Date.now() - startTime) / 1000); // seconds
+        
+        if (timeOnPage > 5) { // Only track if user spent more than 5 seconds
+            const engagementData = {
+                timeOnPage: timeOnPage,
+                maxScrollDepth: maxScrollDepth,
+                page: window.location.pathname,
+                timestamp: new Date().toISOString(),
+                engaged: timeOnPage > 30 || maxScrollDepth > 50
+            };
+            
+            // Send to Firebase
+            fetch('https://hybridofficetracker-default-rtdb.asia-southeast1.firebasedatabase.app/user_engagement.json', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(engagementData)
+            }).catch(err => console.log('Engagement tracking error:', err));
+            
+            // Track with Google Analytics
+            if (typeof gtag !== 'undefined') {
+                gtag('event', 'user_engagement', {
+                    'event_category': 'Engagement',
+                    'custom_parameter_time_on_page': timeOnPage,
+                    'custom_parameter_scroll_depth': maxScrollDepth
+                });
+            }
+        }
+    }
+    
+    // Track on page unload
+    window.addEventListener('beforeunload', trackEngagement);
+    
+    // Track on visibility change (mobile/tab switching)
+    document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'hidden') {
+            trackEngagement();
+        }
+    });
+}
+
+// Track slideshow interactions
+function trackSlideshowInteraction(action, slideIndex) {
+    const interactionData = {
+        action: action, // 'auto_advance', 'manual_click', 'hover_pause'
+        slideIndex: slideIndex,
+        timestamp: new Date().toISOString(),
+        page: window.location.pathname
+    };
+    
+    fetch('https://hybridofficetracker-default-rtdb.asia-southeast1.firebasedatabase.app/slideshow_interactions.json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(interactionData)
+    }).catch(err => console.log('Slideshow tracking error:', err));
+    
+    if (typeof gtag !== 'undefined') {
+        gtag('event', 'slideshow_interaction', {
+            'event_category': 'User Interaction',
+            'event_label': action,
+            'custom_parameter_slide': slideIndex
+        });
+    }
 }

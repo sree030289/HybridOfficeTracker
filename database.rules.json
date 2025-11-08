@@ -1,0 +1,24 @@
+{
+  "rules": {
+    "downloads": {
+      ".write": true,
+      ".read": true
+    },
+    "page_views": {
+      ".write": true,
+      ".read": true
+    },
+    "user_engagement": {
+      ".write": true,
+      ".read": true
+    },
+    "slideshow_interactions": {
+      ".write": true,
+      ".read": true
+    },
+    "test_tracking": {
+      ".write": true,
+      ".read": true
+    }
+  }
+}

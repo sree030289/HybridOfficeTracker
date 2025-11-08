@@ -222,16 +222,17 @@ body {
 
 .phone-mockup {
     position: relative;
-    width: 360px;
-    height: 780px;
+    width: 380px;
+    height: 840px;
     background: linear-gradient(145deg, #2a2a2a, #1a1a1a);
-    border-radius: 40px;
-    padding: 20px;
+    border-radius: 45px;
+    padding: 25px;
     box-shadow: 
-        0 30px 60px rgba(0, 0, 0, 0.6),
-        0 0 0 2px rgba(245, 158, 11, 0.3),
-        inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(245, 158, 11, 0.2);
+        0 35px 70px rgba(0, 0, 0, 0.7),
+        0 0 0 3px rgba(245, 158, 11, 0.4),
+        inset 0 2px 0 rgba(255, 255, 255, 0.15);
+    border: 2px solid rgba(245, 158, 11, 0.3);
+    transform: scale(1.05);
 }
 
 .phone-mockup::before {
@@ -433,28 +434,39 @@ body {
 
 .screenshots-gallery {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 2rem;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 3rem;
+    justify-items: center;
 }
 
 .screenshot-item {
     position: relative;
-    border-radius: 20px;
+    width: 300px;
+    height: 650px;
+    border-radius: 35px;
     overflow: hidden;
-    background: var(--dark-bg);
-    border: 1px solid rgba(245, 158, 11, 0.2);
+    background: linear-gradient(145deg, #2a2a2a, #1a1a1a);
+    border: 2px solid rgba(245, 158, 11, 0.3);
+    padding: 15px;
     transition: all 0.3s ease;
+    box-shadow: 
+        0 25px 50px rgba(0, 0, 0, 0.6),
+        0 0 0 2px rgba(245, 158, 11, 0.2),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .screenshot-item:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 35px 70px rgba(0, 0, 0, 0.8);
+    border-color: var(--primary-orange);
 }
 
 .screenshot-item img {
     width: 100%;
-    height: 400px;
-    object-fit: cover;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 25px;
+    background: #000;
     transition: transform 0.3s ease;
 }
 
@@ -464,12 +476,13 @@ body {
 
 .screenshot-overlay {
     position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
+    bottom: 15px;
+    left: 15px;
+    right: 15px;
     background: linear-gradient(transparent, rgba(0, 0, 0, 0.9));
     padding: 2rem 1.5rem 1.5rem;
     color: var(--text-primary);
+    border-radius: 0 0 25px 25px;
 }
 
 .screenshot-overlay h4 {
@@ -611,8 +624,9 @@ body {
     }
     
     .phone-mockup {
-        width: 300px;
-        height: 650px;
+        width: 320px;
+        height: 720px;
+        transform: scale(0.95);
     }
     
     .features-grid {
@@ -637,6 +651,16 @@ body {
         flex-direction: column;
         align-items: center;
     }
+    
+    .screenshots-gallery {
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 2rem;
+    }
+    
+    .screenshot-item {
+        width: 280px;
+        height: 580px;
+    }
 }
 
 @media (max-width: 480px) {
@@ -657,8 +681,9 @@ body {
     }
     
     .phone-mockup {
-        width: 280px;
-        height: 600px;
+        width: 300px;
+        height: 670px;
+        transform: scale(0.9);
     }
 }
 
@@ -984,5 +1009,10 @@ body {
     
     .legal-page h1, .contact-page h1 {
         font-size: 2rem;
+    }
+    
+    .screenshot-item {
+        width: 260px;
+        height: 540px;
     }
 }

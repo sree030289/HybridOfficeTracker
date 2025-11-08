@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OfficeTrack Analytics Dashboard</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #ffffff;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, #f59e0b, #fbbf24);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            color: #a1a1aa;
+            font-size: 1.1rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+
+        .stat-card {
+            background: #1a1a1a;
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+
+        .stat-card h3 {
+            color: #f59e0b;
+            font-size: 1.1rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #ffffff;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-label {
+            color: #a1a1aa;
+            font-size: 0.9rem;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #a1a1aa;
+        }
+
+        .data-table {
+            background: #1a1a1a;
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .data-table h3 {
+            color: #f59e0b;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .table-container {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 0.75rem;
+            border-bottom: 1px solid rgba(245, 158, 11, 0.1);
+        }
+
+        th {
+            background: rgba(245, 158, 11, 0.1);
+            color: #f59e0b;
+            font-weight: 600;
+        }
+
+        td {
+            color: #ffffff;
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #f59e0b, #fbbf24);
+            color: #000;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(245, 158, 11, 0.3);
+        }
+
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .info {
+            background: rgba(59, 130, 246, 0.1);
+            color: #3b82f6;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+
+        .platform-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .ios {
+            background: rgba(0, 122, 255, 0.2);
+            color: #007AFF;
+        }
+
+        .android {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-chart-line"></i> OfficeTrack Analytics</h1>
+            <p>Real-time insights into app downloads and user engagement</p>
+        </div>
+
+        <button class="refresh-btn" onclick="loadAllData()">
+            <i class="fas fa-sync-alt"></i> Refresh Data
+        </button>
+
+        <div id="error-container"></div>
+
+        <!-- Key Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3><i class="fas fa-download"></i> Total Downloads</h3>
+                <div class="stat-number" id="total-downloads">-</div>
+                <div class="stat-label">App download attempts</div>
+            </div>
+            <div class="stat-card">
+                <h3><i class="fas fa-eye"></i> Page Views</h3>
+                <div class="stat-number" id="total-pageviews">-</div>
+                <div class="stat-label">Website visits</div>
+            </div>
+            <div class="stat-card">
+                <h3><i class="fas fa-users"></i> Engaged Users</h3>
+                <div class="stat-number" id="engaged-users">-</div>
+                <div class="stat-label">Users with 30+ sec visits</div>
+            </div>
+            <div class="stat-card">
+                <h3><i class="fas fa-mobile-alt"></i> iOS Downloads</h3>
+                <div class="stat-number" id="ios-downloads">-</div>
+                <div class="stat-label">App Store clicks</div>
+            </div>
+        </div>
+
+        <!-- Recent Downloads -->
+        <div class="data-table">
+            <h3><i class="fas fa-download"></i> Recent Downloads (Last 50)</h3>
+            <div class="table-container">
+                <table id="downloads-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Platform</th>
+                            <th>Location</th>
+                            <th>User Agent</th>
+                            <th>Referrer</th>
+                        </tr>
+                    </thead>
+                    <tbody id="downloads-body">
+                        <tr><td colspan="5" class="loading">Loading downloads data...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Page Views -->
+        <div class="data-table">
+            <h3><i class="fas fa-eye"></i> Recent Page Views (Last 30)</h3>
+            <div class="table-container">
+                <table id="pageviews-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Page</th>
+                            <th>Title</th>
+                            <th>Referrer</th>
+                            <th>Language</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pageviews-body">
+                        <tr><td colspan="5" class="loading">Loading page views data...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- User Engagement -->
+        <div class="data-table">
+            <h3><i class="fas fa-clock"></i> User Engagement (Last 20)</h3>
+            <div class="table-container">
+                <table id="engagement-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Page</th>
+                            <th>Time on Page</th>
+                            <th>Scroll Depth</th>
+                            <th>Engaged</th>
+                        </tr>
+                    </thead>
+                    <tbody id="engagement-body">
+                        <tr><td colspan="5" class="loading">Loading engagement data...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const FIREBASE_URL = 'https://hybridofficetracker-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+        async function fetchFirebaseData(endpoint) {
+            try {
+                const response = await fetch(`${FIREBASE_URL}/${endpoint}.json`);
+                if (response.status === 404) {
+                    console.log(`No data found for ${endpoint} (this is normal for new dashboards)`);
+                    return null;
+                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                return data || {};
+            } catch (error) {
+                console.error(`Error fetching ${endpoint}:`, error);
+                if (error.message.includes('404')) {
+                    console.log(`${endpoint} data not found - this is normal for new installations`);
+                    return null;
+                } else {
+                    showError(`Failed to fetch ${endpoint} data: ${error.message}`);
+                }
+                return null;
+            }
+        }
+
+        function showError(message) {
+            const errorContainer = document.getElementById('error-container');
+            errorContainer.innerHTML = `<div class="error"><i class="fas fa-exclamation-triangle"></i> ${message}</div>`;
+        }
+
+        function formatDate(timestamp) {
+            return new Date(timestamp).toLocaleString();
+        }
+
+        function formatTimeOnPage(seconds) {
+            if (seconds < 60) return `${seconds}s`;
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = seconds % 60;
+            return `${minutes}m ${remainingSeconds}s`;
+        }
+
+        async function loadDownloadsData() {
+            const downloads = await fetchFirebaseData('downloads');
+            const downloadsArray = downloads ? Object.entries(downloads).map(([key, value]) => ({
+                id: key,
+                ...value
+            })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) : [];
+
+            // Update stats
+            document.getElementById('total-downloads').textContent = downloadsArray.length;
+            document.getElementById('ios-downloads').textContent = 
+                downloadsArray.filter(d => d.platform === 'iOS').length;
+
+            // Update table
+            const tbody = document.getElementById('downloads-body');
+            if (downloadsArray.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5">No downloads recorded yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = downloadsArray.slice(0, 50).map(download => `
+                <tr>
+                    <td>${formatDate(download.timestamp)}</td>
+                    <td><span class="platform-badge ${download.platform.toLowerCase()}">${download.platform}</span></td>
+                    <td>${download.location || 'unknown'}</td>
+                    <td title="${download.userAgent}">${download.userAgent ? download.userAgent.substring(0, 50) + '...' : 'N/A'}</td>
+                    <td>${download.referrer || 'direct'}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadPageViewsData() {
+            const pageViews = await fetchFirebaseData('page_views');
+            const pageViewsArray = pageViews ? Object.entries(pageViews).map(([key, value]) => ({
+                id: key,
+                ...value
+            })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) : [];
+
+            // Update stats
+            document.getElementById('total-pageviews').textContent = pageViewsArray.length;
+
+            // Update table
+            const tbody = document.getElementById('pageviews-body');
+            if (pageViewsArray.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5">No page views recorded yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = pageViewsArray.slice(0, 30).map(view => `
+                <tr>
+                    <td>${formatDate(view.timestamp)}</td>
+                    <td>${view.page || '/'}</td>
+                    <td>${view.title || 'Unknown'}</td>
+                    <td>${view.referrer || 'direct'}</td>
+                    <td>${view.language || 'N/A'}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadEngagementData() {
+            const engagement = await fetchFirebaseData('user_engagement');
+            const engagementArray = engagement ? Object.entries(engagement).map(([key, value]) => ({
+                id: key,
+                ...value
+            })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) : [];
+
+            // Update stats
+            const engagedUsers = engagementArray.filter(e => e.engaged).length;
+            document.getElementById('engaged-users').textContent = engagedUsers;
+
+            // Update table
+            const tbody = document.getElementById('engagement-body');
+            if (engagementArray.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5">No engagement data recorded yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = engagementArray.slice(0, 20).map(engagement => `
+                <tr>
+                    <td>${formatDate(engagement.timestamp)}</td>
+                    <td>${engagement.page || '/'}</td>
+                    <td>${formatTimeOnPage(engagement.timeOnPage)}</td>
+                    <td>${engagement.maxScrollDepth}%</td>
+                    <td>${engagement.engaged ? '✅ Yes' : '❌ No'}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadAllData() {
+            // Clear errors and show loading
+            document.getElementById('error-container').innerHTML = '';
+            showInfo('🔄 Loading analytics data...');
+            
+            // Load all data in parallel
+            await Promise.all([
+                loadDownloadsData(),
+                loadPageViewsData(),
+                loadEngagementData()
+            ]);
+
+            // Clear loading message
+            document.getElementById('error-container').innerHTML = '';
+
+            // Check if we have any data at all
+            const hasDownloads = document.getElementById('total-downloads').textContent !== '0';
+            const hasPageViews = document.getElementById('total-pageviews').textContent !== '0';
+            
+            if (!hasDownloads && !hasPageViews) {
+                showInfo('📊 Dashboard is ready! Visit your website (<a href="/" target="_blank">https://hybridofficetracker.web.app</a>) to start collecting analytics data.');
+            }
+        }
+
+        function showInfo(message) {
+            const errorContainer = document.getElementById('error-container');
+            errorContainer.innerHTML = `<div class="info"><i class="fas fa-info-circle"></i> ${message}</div>`;
+        }
+
+        // Load data on page load
+        document.addEventListener('DOMContentLoaded', loadAllData);
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadAllData, 30000);
+    </script>
+</body>
+</html>
