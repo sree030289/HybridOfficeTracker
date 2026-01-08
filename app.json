@@ -2,9 +2,8 @@
   "expo": {
     "name": "OfficeTrack",
     "slug": "officetrack",
-    "version": "2.1.0",
+    "version": "3.0.0",
     "orientation": "portrait",
-    "description": "Your simple hybrid work attendance tracker. Track office days, set goals, and get insights about your work patterns.",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "splash": {
@@ -18,12 +17,16 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.officetrack.app",
-      "buildNumber": "12",
+      "buildNumber": "5",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "OfficeTrack uses your location to automatically detect when you're at your office (within 200m) for attendance logging. Location checks occur at scheduled times (10am, 1pm, 3pm) and when you open the app. All data stays on your device.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "OfficeTrack performs scheduled location checks (10am, 1pm, 3pm) to automatically log office attendance and send daily work summary notifications. This helps track your hybrid work patterns. Location data is processed locally and never shared. You can disable this anytime in Settings.",
+        "NSLocationWhenInUseUsageDescription": "We use your location to automatically detect when you're at your office and mark your attendance. Location is checked only once per hour to save battery.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We use your location to automatically detect when you're at your office and mark your attendance. Location is checked only once per hour to save battery.",
         "UIBackgroundModes": [
           "location",
+          "fetch",
+          "remote-notification",
+          "location",
+          "fetch",
           "remote-notification"
         ],
         "ITSAppUsesNonExemptEncryption": false
@@ -35,14 +38,17 @@
         "backgroundColor": "#4F46E5"
       },
       "package": "com.officetrack.app",
-      "versionCode": 12,
+      "versionCode": 5,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
         "RECEIVE_BOOT_COMPLETED",
         "SCHEDULE_EXACT_ALARM",
         "POST_NOTIFICATIONS",
-        "VIBRATE"
+        "VIBRATE",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
     "notification": {
@@ -62,11 +68,9 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "OfficeTrack uses your location to automatically detect when you're at your office for attendance logging. Scheduled checks at 10am, 1pm, 3pm plus when app opens. Data stays on your device.",
-          "locationAlwaysPermission": "OfficeTrack performs scheduled location checks (10am, 1pm, 3pm) to automatically log office attendance and provide daily work summaries. This enables background attendance tracking and productivity notifications. You can disable anytime in Settings."
+          "locationAlwaysAndWhenInUsePermission": "Allow OfficeTrack to use your location to automatically detect office attendance."
         }
-      ],
-      "expo-font"
+      ]
     ],
     "extra": {
       "eas": {

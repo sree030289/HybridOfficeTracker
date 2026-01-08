@@ -1,6 +1,6 @@
 {
   "name": "officetrack",
-  "version": "1.0.0",
+  "version": "2.2.1",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
@@ -23,7 +23,9 @@
     "expo-sharing": "~14.0.7",
     "expo-status-bar": "~3.0.8",
     "expo-system-ui": "~6.0.8",
+    "expo-task-manager": "^14.0.8",
     "firebase": "^12.4.0",
+    "firebase-admin": "^13.6.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",

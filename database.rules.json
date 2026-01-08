@@ -1,5 +1,36 @@
 {
   "rules": {
+    "users": {
+      "$userId": {
+        ".read": "true",
+        ".write": "true",
+        "attendanceData": {
+          "$dateStr": {
+            ".validate": "newData.isString() && (newData.val() === 'office' || newData.val() === 'wfh' || newData.val() === 'leave')"
+          }
+        },
+        "plannedDays": {
+          "$dateStr": {
+            ".validate": "newData.isString() && (newData.val() === 'office' || newData.val() === 'wfh' || newData.val() === 'leave')"
+          }
+        },
+        "userData": {
+          ".validate": "newData.hasChildren(['companyName', 'trackingMode', 'country'])"
+        },
+        "settings": {
+          ".validate": "newData.hasChildren(['monthlyTarget', 'targetMode'])",
+          "monthlyTarget": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "targetMode": {
+            ".validate": "newData.isString() && (newData.val() === 'days' || newData.val() === 'percentage')"
+          }
+        },
+        "lastUpdated": {
+          ".validate": "newData.isNumber()"
+        }
+      }
+    },
     "downloads": {
       ".write": true,
       ".read": true
@@ -19,6 +50,15 @@
     "test_tracking": {
       ".write": true,
       ".read": true
+    },
+    "logs": {
+      "$userId": {
+        ".read": "true",
+        ".write": "true",
+        "$logId": {
+          ".validate": "newData.hasChildren(['level', 'message', 'timestamp'])"
+        }
+      }
     }
   }
 }
