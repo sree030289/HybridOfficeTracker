@@ -1246,6 +1246,25 @@ export default function App() {
           productionLogger.info('userData section repaired', repairData);
         }
         
+        // CRITICAL FIX: Register FCM token for existing users who don't have one
+        // This fixes users who onboarded before the FCM registration fix
+        if (Platform.OS !== 'web' && permissionGranted) {
+          const hasFcmToken = allData.settings?.fcmToken || allData.fcmToken;
+          if (!hasFcmToken) {
+            console.log('⚠️  WARNING: User missing FCM token - registering now');
+            productionLogger.warn('Missing FCM token detected, registering retroactively');
+            
+            await fcmService.updateUserSettings({
+              trackingMode: loadedUserData.trackingMode,
+              notificationsEnabled: true,
+              updatedAt: Date.now()
+            });
+            
+            console.log('✅ FCM token registered retroactively');
+            productionLogger.info('FCM token registered retroactively');
+          }
+        }
+        
         // Set holidays from the data we already loaded
         if (allData.cachedHolidays && Object.keys(allData.cachedHolidays).length > 0) {
           setCachedHolidays(allData.cachedHolidays);
@@ -1261,7 +1280,6 @@ export default function App() {
           console.log('🚀 ============================================');
           console.log('🚀 AUTO-UPLOADING MIGRATED DATA TO FIREBASE');
           console.log('🚀 ============================================');
-          
           // Log migration start
           const migrationStats = {
             attendanceCount: Object.keys(allData.attendanceData || {}).length,
@@ -1762,9 +1780,19 @@ export default function App() {
       console.log('⚠️ Unable to check background location permission:', error);
     }
 
+    // ALWAYS register FCM token for auto mode users (even without location)
+    if (Platform.OS !== 'web') {
+      console.log('📱 Registering FCM token for auto-tracking mode...');
+      await fcmService.updateUserSettings({
+        trackingMode: 'auto',
+        notificationsEnabled: true,
+        updatedAt: Date.now()
+      });
+    }
+
     // Set up smart notifications (works reliably on all devices)
     if (Platform.OS !== 'web' && userConfig.companyLocation) {
-      console.log('📱 Setting up smart auto-tracking notifications...');
+      console.log('📍 Setting up location-based notifications...');
       await setupSmartAutoTrackingNotifications(userConfig.companyLocation);
 
       // Don't block setup - check location in background after setup completes
@@ -1773,6 +1801,8 @@ export default function App() {
           console.log('⚠️ Initial location check failed (will retry later):', err);
         });
       }, 1000);
+    } else if (!userConfig.companyLocation) {
+      console.log('⚠️ No company location set - location tracking disabled');
     }
   };
 

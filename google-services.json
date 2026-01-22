@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "822621254921",
+    "firebase_url": "https://hybridofficetracker-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "hybridofficetracker",
+    "storage_bucket": "hybridofficetracker.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:822621254921:android:3fbaa5b6aafa8bcdc1cfd8",
+        "android_client_info": {
+          "package_name": "com.officetrack.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAqgqzEBQUEjYiBb7_6IPkJM8Rz7EibN9I"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
