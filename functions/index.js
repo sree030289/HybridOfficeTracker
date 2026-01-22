@@ -102,14 +102,75 @@ function isWeekend(date) {
 }
 
 /**
+ * Helper: Send push notification via Expo Push Service
+ */
+async function sendExpoPushNotification(expoPushToken, { title, body, data, categoryId }) {
+  const https = require('https');
+  
+  const message = {
+    to: expoPushToken,
+    sound: 'default',
+    title: title,
+    body: body,
+    data: data || {},
+    priority: 'high'
+  };
+
+  if (categoryId) {
+    message.categoryId = categoryId;
+  }
+
+  const postData = JSON.stringify(message);
+
+  const options = {
+    hostname: 'exp.host',
+    port: 443,
+    path: '/--/api/v2/push/send',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(postData)
+    }
+  };
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let responseData = '';
+      res.on('data', (chunk) => { responseData += chunk; });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(responseData);
+          if (result.data && result.data.status === 'ok') {
+            resolve({ success: true });
+          } else {
+            resolve({ success: false, error: result });
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
  * Helper: Send reminder to users in manual mode who haven't logged today
  */
 async function sendReminderToManualUsers({ title, body, time }) {
   try {
-    // Check if today is a weekend
-    const now = new Date();
-    if (isWeekend(now)) {
-      console.log(`${time} Reminder: Skipping - today is a weekend`);
+    // Check if today is a weekend IN SYDNEY TIMEZONE (not UTC!)
+    const sydneyTime = new Date().toLocaleString('en-US', { timeZone: 'Australia/Sydney' });
+    const sydneyDate = new Date(sydneyTime);
+    
+    if (isWeekend(sydneyDate)) {
+      console.log(`${time} Reminder: Skipping - today is a weekend in Sydney`);
       return { success: 0, failed: 0, skipped: 'weekend' };
     }
 
@@ -123,79 +184,81 @@ async function sendReminderToManualUsers({ title, body, time }) {
       return null;
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    const tokens = [];
-    const userIds = [];
+    // Use Sydney date for "today" key
+    const today = sydneyDate.toISOString().split('T')[0];
+    console.log(`${time} Reminder: Checking for date ${today} in Sydney timezone`);
+    const notifications = [];
 
     // Find users in manual mode who haven't logged today
+    let totalUsers = 0;
+    let manualUsers = 0;
+    let usersWithTokens = 0;
+    
     for (const [userId, userData] of Object.entries(users)) {
+      totalUsers++;
+      
       // Check if user is in manual mode
-      if (userData.settings?.trackingMode === 'manual' && userData.fcmToken) {
-        // Check if today is a public holiday for this user
-        const isHoliday = userData.cachedHolidays?.[today];
-        if (isHoliday) {
-          console.log(`Skipping ${userId}: Today is a public holiday (${isHoliday})`);
-          continue;
-        }
+      if (userData.userData?.trackingMode === 'manual') {
+        manualUsers++;
+        
+        if (userData.fcmToken) {
+          usersWithTokens++;
+          
+          // Check if today is a public holiday for this user
+          const isHoliday = userData.cachedHolidays?.[today];
+          if (isHoliday) {
+            console.log(`Skipping ${userId.substring(0, 20)}: Today is a public holiday (${isHoliday})`);
+            continue;
+          }
 
-        // Check if user has already logged today
-        const attendance = userData.attendanceData?.[today];
-        if (!attendance) {
-          tokens.push(userData.fcmToken);
-          userIds.push(userId);
-        }
-      }
-    }
-
-    console.log(`${time} Reminder: Found ${tokens.length} users to notify`);
-
-    if (tokens.length === 0) {
-      return null;
-    }
-
-    // Send notification to all eligible users
-    const message = {
-      notification: {
-        title: title,
-        body: body,
-      },
-      data: {
-        type: 'manual_reminder',
-        time: time,
-        action: 'open_app'
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          channelId: 'reminders',
-          sound: 'default',
-          color: '#4F46E5',
-        }
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
+          // Check if user has already logged today
+          const attendance = userData.attendanceData?.[today];
+          if (!attendance) {
+            notifications.push({
+              userId,
+              token: userData.fcmToken
+            });
           }
         }
       }
-    };
-
-    // Send to all tokens (batch send)
-    const response = await admin.messaging().sendEachForMulticast({
-      tokens: tokens,
-      ...message
-    });
-
-    console.log(`✅ Sent ${response.successCount} notifications, ${response.failureCount} failures`);
-    
-    // Clean up invalid tokens
-    if (response.failureCount > 0) {
-      await cleanupInvalidTokens(response.responses, tokens, userIds);
     }
 
-    return { success: response.successCount, failed: response.failureCount };
+    console.log(`${time} Reminder: Total=${totalUsers}, Manual=${manualUsers}, WithTokens=${usersWithTokens}, Eligible=${notifications.length}`);
+
+    if (notifications.length === 0) {
+      return { success: 0, failed: 0 };
+    }
+
+    // Send notifications via Expo Push Service
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const notif of notifications) {
+      try {
+        const result = await sendExpoPushNotification(notif.token, {
+          title: title,
+          body: body,
+          data: {
+            type: 'manual_reminder',
+            time: time,
+            action: 'open_app'
+          }
+        });
+
+        if (result.success) {
+          successCount++;
+        } else {
+          failureCount++;
+          console.error(`Failed to send to ${notif.userId}:`, result.error);
+        }
+      } catch (error) {
+        failureCount++;
+        console.error(`Error sending to ${notif.userId}:`, error);
+      }
+    }
+
+    console.log(`✅ Sent ${successCount} notifications, ${failureCount} failures`);
+    return { success: successCount, failed: failureCount };
   } catch (error) {
     console.error('Error sending reminder:', error);
     return null;
@@ -207,10 +270,12 @@ async function sendReminderToManualUsers({ title, body, time }) {
  */
 async function sendReminderToAutoUsers({ title, body, time }) {
   try {
-    // Check if today is a weekend
-    const now = new Date();
-    if (isWeekend(now)) {
-      console.log(`${time} Auto Reminder: Skipping - today is a weekend`);
+    // Check if today is a weekend IN SYDNEY TIMEZONE (not UTC!)
+    const sydneyTime = new Date().toLocaleString('en-US', { timeZone: 'Australia/Sydney' });
+    const sydneyDate = new Date(sydneyTime);
+    
+    if (isWeekend(sydneyDate)) {
+      console.log(`${time} Auto Reminder: Skipping - today is a weekend in Sydney`);
       return { success: 0, failed: 0, skipped: 'weekend' };
     }
 
@@ -224,14 +289,14 @@ async function sendReminderToAutoUsers({ title, body, time }) {
       return null;
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    const tokens = [];
-    const userIds = [];
+    // Use Sydney date for "today" key
+    const today = sydneyDate.toISOString().split('T')[0];
+    const notifications = [];
 
     // Find users in AUTO mode who haven't logged today
     for (const [userId, userData] of Object.entries(users)) {
       // Check if user is in auto mode
-      if (userData.settings?.trackingMode === 'auto' && userData.fcmToken) {
+      if (userData.userData?.trackingMode === 'auto' && userData.fcmToken) {
         // Check if today is a public holiday for this user
         const isHoliday = userData.cachedHolidays?.[today];
         if (isHoliday) {
@@ -242,61 +307,50 @@ async function sendReminderToAutoUsers({ title, body, time }) {
         // Check if user has already logged today
         const attendance = userData.attendanceData?.[today];
         if (!attendance) {
-          tokens.push(userData.fcmToken);
-          userIds.push(userId);
+          notifications.push({
+            userId,
+            token: userData.fcmToken
+          });
         }
       }
     }
 
-    console.log(`${time} Auto Reminder: Found ${tokens.length} users to notify`);
+    console.log(`${time} Auto Reminder: Found ${notifications.length} users to notify`);
 
-    if (tokens.length === 0) {
-      return null;
+    if (notifications.length === 0) {
+      return { success: 0, failed: 0 };
     }
 
-    // Send notification to all eligible users
-    const message = {
-      notification: {
-        title: title,
-        body: body,
-      },
-      data: {
-        type: 'auto_reminder',
-        time: time,
-        action: 'open_app'
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          channelId: 'reminders',
-          sound: 'default',
-          color: '#4F46E5',
-        }
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
+    // Send notifications via Expo Push Service
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const notif of notifications) {
+      try {
+        const result = await sendExpoPushNotification(notif.token, {
+          title: title,
+          body: body,
+          data: {
+            type: 'auto_reminder',
+            time: time,
+            action: 'open_app'
           }
+        });
+
+        if (result.success) {
+          successCount++;
+        } else {
+          failureCount++;
+          console.error(`Failed to send to ${notif.userId}:`, result.error);
         }
+      } catch (error) {
+        failureCount++;
+        console.error(`Error sending to ${notif.userId}:`, error);
       }
-    };
-
-    // Send to all tokens (batch send)
-    const response = await admin.messaging().sendEachForMulticast({
-      tokens: tokens,
-      ...message
-    });
-
-    console.log(`✅ Sent ${response.successCount} auto notifications, ${response.failureCount} failures`);
-    
-    // Clean up invalid tokens
-    if (response.failureCount > 0) {
-      await cleanupInvalidTokens(response.responses, tokens, userIds);
     }
 
-    return { success: response.successCount, failed: response.failureCount };
+    console.log(`✅ Sent ${successCount} auto notifications, ${failureCount} failures`);
+    return { success: successCount, failed: failureCount };
   } catch (error) {
     console.error('Error sending auto reminder:', error);
     return null;
@@ -326,6 +380,8 @@ async function sendWeeklySummary(day) {
     const userIds = [];
     const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
+    const notifications = [];
+
     // Calculate summary for each user
     for (const [userId, userData] of Object.entries(users)) {
       if (!userData.fcmToken) continue;
@@ -337,71 +393,150 @@ async function sendWeeklySummary(day) {
         continue;
       }
 
-      // Count office and remote days from attendanceData
+      // Count office days from attendanceData for current month
       const attendanceData = userData.attendanceData || {};
       let officeCount = 0;
-      let remoteCount = 0;
       
       // Filter attendance for current month
       Object.keys(attendanceData).forEach(dateStr => {
         if (dateStr.startsWith(currentMonth)) {
-          const location = attendanceData[dateStr];
-          if (location === 'office') officeCount++;
-          else if (location === 'wfh' || location === 'remote') remoteCount++;
+          const attendance = attendanceData[dateStr];
+          // Check both old format (string) and new format (object)
+          const status = typeof attendance === 'string' ? attendance : attendance?.status;
+          if (status === 'office') officeCount++;
+        }
+      });
+
+      // Calculate monthly target
+      const targetMode = userData.settings?.targetMode || 'percentage';
+      const monthlyTarget = userData.settings?.monthlyTarget || 50;
+      
+      // Calculate working days in current month
+      const year = now.getFullYear();
+      const month = now.getMonth();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      
+      // Count working days (Mon-Fri) in this month
+      let workingDaysInMonth = 0;
+      for (let d = 1; d <= daysInMonth; d++) {
+        const date = new Date(year, month, d);
+        const dayOfWeek = date.getDay();
+        if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Not weekend
+          workingDaysInMonth++;
+        }
+      }
+      
+      // Count public holidays in current month (only weekdays)
+      const cachedHolidays = userData.cachedHolidays || {};
+      let publicHolidaysInMonth = 0;
+      Object.keys(cachedHolidays).forEach(dateStr => {
+        if (dateStr.startsWith(currentMonth)) {
+          const date = new Date(dateStr);
+          const dayOfWeek = date.getDay();
+          if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Only count weekday holidays
+            publicHolidaysInMonth++;
+          }
         }
       });
       
-      tokens.push(userData.fcmToken);
-      userIds.push(userId);
+      // Count approved leaves in current month (only weekdays)
+      let approvedLeavesInMonth = 0;
+      Object.keys(attendanceData).forEach(dateStr => {
+        if (dateStr.startsWith(currentMonth)) {
+          const attendance = attendanceData[dateStr];
+          const status = typeof attendance === 'string' ? attendance : attendance?.status;
+          if (status === 'leave') {
+            const date = new Date(dateStr);
+            const dayOfWeek = date.getDay();
+            if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Only count weekday leaves
+              approvedLeavesInMonth++;
+            }
+          }
+        }
+      });
+      
+      // Adjust working days by subtracting holidays and leaves
+      const adjustedWorkingDays = workingDaysInMonth - publicHolidaysInMonth - approvedLeavesInMonth;
+      
+      // Calculate remaining working days from today
+      let remainingWorkingDays = 0;
+      for (let d = now.getDate(); d <= daysInMonth; d++) {
+        const date = new Date(year, month, d);
+        const dayOfWeek = date.getDay();
+        if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+          remainingWorkingDays++;
+        }
+      }
+      
+      // Calculate required office days based on ADJUSTED working days
+      let requiredOfficeDays;
+      if (targetMode === 'percentage') {
+        requiredOfficeDays = Math.ceil((monthlyTarget / 100) * adjustedWorkingDays);
+      } else {
+        requiredOfficeDays = monthlyTarget; // Fixed number of days
+      }
+      
+      const daysRemaining = Math.max(0, requiredOfficeDays - officeCount);
+      
+      notifications.push({
+        userId,
+        token: userData.fcmToken,
+        officeCount,
+        daysRemaining,
+        remainingWorkingDays
+      });
     }
 
-    console.log(`${day} Summary: Notifying ${tokens.length} users`);
+    console.log(`${day} Summary: Notifying ${notifications.length} users`);
 
-    if (tokens.length === 0) {
-      return null;
+    if (notifications.length === 0) {
+      return { success: 0, failed: 0 };
     }
 
     const emoji = day === 'Monday' ? '📅' : '📊';
-    const message = {
-      notification: {
-        title: `${emoji} ${day} Check-in`,
-        body: `Time to review your week! Check your office attendance stats.`,
-      },
-      data: {
-        type: 'weekly_summary',
-        day: day,
-        action: 'open_stats'
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          channelId: 'reminders',
-          sound: 'default',
-          color: '#4F46E5',
-        }
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
-          }
-        }
-      }
-    };
-
-    const response = await admin.messaging().sendEachForMulticast({
-      tokens: tokens,
-      ...message
-    });
-
-    console.log(`✅ Sent ${response.successCount} notifications, ${response.failureCount} failures`);
     
-    if (response.failureCount > 0) {
-      await cleanupInvalidTokens(response.responses, tokens, userIds);
+    // Send notifications via Expo Push Service
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const notif of notifications) {
+      try {
+        // Create personalized message based on remaining days
+        let body;
+        if (notif.daysRemaining === 0) {
+          body = `Great job! You've met your office target for this month (${notif.officeCount} days). Keep it up! 🎉`;
+        } else if (notif.daysRemaining === 1) {
+          body = `You need to come in 1 more day this month to meet your target. You've completed ${notif.officeCount} days so far. 💪`;
+        } else {
+          body = `You need to come in ${notif.daysRemaining} more days this month. You've completed ${notif.officeCount} days so far. Let's do this! 🚀`;
+        }
+        
+        const result = await sendExpoPushNotification(notif.token, {
+          title: `${emoji} ${day} Office Check`,
+          body: body,
+          data: {
+            type: 'weekly_summary',
+            day: day,
+            officeCount: notif.officeCount,
+            daysRemaining: notif.daysRemaining,
+            action: 'open_stats'
+          }
+        });
+
+        if (result.success) {
+          successCount++;
+        } else {
+          failureCount++;
+          console.error(`Failed to send to ${notif.userId}:`, result.error);
+        }
+      } catch (error) {
+        failureCount++;
+        console.error(`Error sending to ${notif.userId}:`, error);
+      }
     }
 
-    return { success: response.successCount, failed: response.failureCount };
+    console.log(`✅ Sent ${successCount} notifications, ${failureCount} failures`);
+    return { success: successCount, failed: failureCount };
   } catch (error) {
     console.error('Error sending weekly summary:', error);
     return null;
@@ -411,6 +546,9 @@ async function sendWeeklySummary(day) {
 /**
  * Database trigger: Send notification when user is detected near office
  * Triggers when nearOffice.detected changes to true
+ * 
+ * NOTE: This trigger may have reliability issues due to cross-region setup.
+ * Use sendNearOfficeNotification HTTP endpoint as fallback.
  */
 exports.onNearOfficeDetected = functions.database
   .ref('/users/{userId}/nearOffice')
@@ -460,11 +598,13 @@ exports.onNearOfficeDetected = functions.database
         to: expoPushToken,
         sound: 'default',
         title: '📍 Near Office Detected',
-        body: 'We detected you near your office. Where are you working today?',
+        body: 'Tap to confirm office attendance, or use buttons to change.',
         data: { 
           type: 'location_confirmation',
           date: today,
-          userId: userId
+          userId: userId,
+          autoLog: 'office',  // Auto-log as office when notification body is tapped
+          trackingMode: 'auto'
         },
         categoryId: 'ATTENDANCE_CATEGORY'
       };
@@ -506,6 +646,106 @@ exports.onNearOfficeDetected = functions.database
       return null;
     }
   });
+
+/**
+ * HTTP endpoint: Send notification when user is near office
+ * Usage: POST with { userId: string }
+ * This is a more reliable alternative to the database trigger
+ */
+exports.sendNearOfficeNotification = functions.https.onRequest(async (req, res) => {
+  if (req.method !== 'POST') {
+    res.status(405).send('Method Not Allowed');
+    return;
+  }
+
+  const { userId } = req.body;
+  
+  if (!userId) {
+    res.status(400).send('userId required');
+    return;
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    const db = admin.database();
+    const userSnapshot = await db.ref(`users/${userId}`).get();
+    
+    if (!userSnapshot.exists()) {
+      res.status(404).send('User not found');
+      return;
+    }
+
+    const userData = userSnapshot.val();
+    
+    // Check if user has FCM token
+    if (!userData.fcmToken) {
+      res.status(404).send('No FCM token for user');
+      return;
+    }
+
+    // Check if already logged today
+    if (userData.attendanceData?.[today]) {
+      res.status(200).send({ message: 'Already logged today, skipping notification' });
+      return;
+    }
+
+    // Send notification via Expo Push Service
+    const expoPushToken = userData.fcmToken;
+    const message = {
+      to: expoPushToken,
+      sound: 'default',
+      title: '📍 Near Office Detected',
+      body: 'Tap to confirm office attendance, or use buttons to change.',
+      data: { 
+        type: 'location_confirmation',
+        date: today,
+        userId: userId,
+        autoLog: 'office',
+        trackingMode: 'auto'
+      },
+      categoryId: 'ATTENDANCE_CATEGORY'
+    };
+
+    const https = require('https');
+    const postData = JSON.stringify(message);
+
+    const options = {
+      hostname: 'exp.host',
+      port: 443,
+      path: '/--/api/v2/push/send',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    await new Promise((resolve, reject) => {
+      const req = https.request(options, (apiRes) => {
+        let data = '';
+        apiRes.on('data', (chunk) => { data += chunk; });
+        apiRes.on('end', () => {
+          console.log('✅ Near office notification sent to:', userId);
+          res.status(200).send({ success: true, message: 'Notification sent', expoResponse: data });
+          resolve();
+        });
+      });
+
+      req.on('error', (error) => {
+        console.error('❌ Error sending notification:', error);
+        res.status(500).send({ success: false, error: error.message });
+        reject(error);
+      });
+
+      req.write(postData);
+      req.end();
+    });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).send({ success: false, error: error.message });
+  }
+});
 
 /**
  * Scheduled function: Reset nearOffice flags at midnight (runs daily)
@@ -608,20 +848,21 @@ exports.sendTestNotification = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    const message = {
-      notification: {
-        title: '🧪 Test Notification',
-        body: 'This is a test notification from Firebase Cloud Functions!',
-      },
+    // Send via Expo Push Service
+    const result = await sendExpoPushNotification(userData.fcmToken, {
+      title: '🧪 Test Notification',
+      body: 'This is a test notification from Firebase Cloud Functions!',
       data: {
         type: 'test',
         timestamp: Date.now().toString()
-      },
-      token: userData.fcmToken
-    };
+      }
+    });
 
-    await admin.messaging().send(message);
-    res.status(200).send({ success: true, message: 'Notification sent' });
+    if (result.success) {
+      res.status(200).send({ success: true, message: 'Notification sent via Expo Push Service' });
+    } else {
+      res.status(500).send({ success: false, error: result.error });
+    }
   } catch (error) {
     console.error('Error sending test notification:', error);
     res.status(500).send({ success: false, error: error.message });

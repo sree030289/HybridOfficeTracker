@@ -25,6 +25,7 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import * as TaskManager from 'expo-task-manager';
+import * as Application from 'expo-application';
 import { moveAsync, documentDirectory, writeAsStringAsync } from 'expo-file-system/legacy';
 import firebaseService from './services/firebaseService';
 import fcmService from './services/fcmService';
@@ -61,14 +62,22 @@ const startOfficeGeofencingAsync = async (companyLocation) => {
 
     // Ensure permissions (background required for closed-app arrival)
     const fg = await Location.getForegroundPermissionsAsync();
+    console.log('📍 Foreground permission status:', fg.status);
+    productionLogger.info('Checking foreground location permission', { status: fg.status });
+    
     if (fg.status !== 'granted') {
       console.log('ℹ️ Geofencing not started: foreground location permission not granted');
+      productionLogger.warn('Geofencing blocked: foreground permission not granted', { status: fg.status });
       return;
     }
 
     const bg = await Location.getBackgroundPermissionsAsync();
+    console.log('📍 Background permission status:', bg.status);
+    productionLogger.info('Checking background location permission', { status: bg.status });
+    
     if (bg.status !== 'granted') {
       console.log('ℹ️ Geofencing not started: background location permission not granted');
+      productionLogger.warn('Geofencing blocked: background permission not granted', { status: bg.status });
       return;
     }
 
@@ -89,9 +98,76 @@ const startOfficeGeofencingAsync = async (companyLocation) => {
 
     await Location.startGeofencingAsync(OFFICE_GEOFENCE_TASK, regions);
     await AsyncStorage.setItem(OFFICE_GEOFENCE_CONFIG_KEY, JSON.stringify(nextConfig));
-    console.log('✅ Office geofencing started');
+    console.log('✅ Office geofencing started successfully');
+    console.log('📍 Geofence details:', {
+      latitude: companyLocation.latitude,
+      longitude: companyLocation.longitude,
+      radius: 100
+    });
+    console.log('🔧 Geofence will trigger when entering office radius');
+    
+    // Log to Firebase for remote debugging
+    productionLogger.info('Geofencing started', {
+      latitude: companyLocation.latitude,
+      longitude: companyLocation.longitude,
+      radius: 100
+    });
+
+    // CRITICAL: Check if user is already inside the geofence (for upgraded users)
+    // This handles the case where user updates app while already at office
+    try {
+      const currentLocation = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      
+      const distance = calculateDistance(
+        currentLocation.coords.latitude,
+        currentLocation.coords.longitude,
+        companyLocation.latitude,
+        companyLocation.longitude
+      );
+      
+      console.log(`📍 Current distance from office: ${Math.round(distance)}m`);
+      productionLogger.info('Initial location check', { 
+        distance: Math.round(distance),
+        isInside: distance <= 100 
+      });
+      
+      if (distance <= 100) {
+        console.log('🏢 User is already inside office geofence - triggering notification');
+        productionLogger.info('User already inside geofence on startup');
+        
+        // Manually trigger the same logic as geofence ENTER
+        const today = new Date().toISOString().split('T')[0];
+        const userId = await AsyncStorage.getItem('userId');
+        
+        if (userId) {
+          // Update Firebase
+          await firebaseService.initialize(userId);
+          await firebaseService.updateData('nearOffice', {
+            detected: true,
+            timestamp: Date.now(),
+            date: today
+          });
+          
+          // Call Cloud Function
+          await fetch('https://us-central1-hybridofficetracker.cloudfunctions.net/sendNearOfficeNotification', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId })
+          });
+          
+          console.log('✅ Initial geofence notification sent');
+          productionLogger.info('Initial geofence notification sent', { date: today });
+        }
+      }
+    } catch (locationError) {
+      console.log('ℹ️ Could not check initial location:', locationError.message);
+      productionLogger.warn('Initial location check failed', { error: locationError.message });
+    }
   } catch (error) {
     console.error('❌ Failed to start office geofencing:', error);
+    console.error('Error details:', error.message);
   }
 };
 
@@ -145,19 +221,35 @@ const isWeekendDate = (dateString) => {
 if (Platform.OS !== 'web') {
   try {
     TaskManager.defineTask(OFFICE_GEOFENCE_TASK, async ({ data, error }) => {
+      console.log('🚨 GEOFENCE TASK TRIGGERED!', { data, error });
+      
+      // Log to Firebase for remote debugging
+      productionLogger.info('Geofence task triggered', { 
+        eventType: data?.eventType,
+        hasError: !!error,
+        errorMessage: error?.message
+      });
+      
       if (error) {
         console.error('❌ Geofence task error:', error);
+        productionLogger.error('Geofence task error', error);
         return;
       }
 
       const eventType = data?.eventType;
       const region = data?.region;
+      console.log('📍 Geofence event:', { eventType, region });
+      
       if (!region) return;
 
       if (eventType !== Location.GeofencingEventType.Enter) {
+        console.log('ℹ️ Ignoring geofence exit event');
         return;
       }
 
+      console.log('✅ Geofence ENTER detected!');
+      productionLogger.info('Geofence ENTER detected');
+      
       try {
         // Ensure auto mode is still enabled (safety check)
         const localData = await firebaseService.getLocalData();
@@ -196,15 +288,35 @@ if (Platform.OS !== 'web') {
         }
 
         // Update Firebase to indicate user is near office
-        // Cloud Function will watch this and send notification
         await firebaseService.initialize(userId);
         await firebaseService.updateData('nearOffice', {
           detected: true,
           timestamp: Date.now(),
           date: today
         });
+        console.log('✅ nearOffice flag updated in Firebase');
+        productionLogger.info('nearOffice flag updated', { userId, date: today });
 
-        console.log('📍 Geofence enter: Updated nearOffice flag in Firebase for', today);
+        // Call Cloud Function directly to send notification (more reliable than database trigger)
+        try {
+          console.log('📤 Calling sendNearOfficeNotification endpoint...');
+          const response = await fetch('https://us-central1-hybridofficetracker.cloudfunctions.net/sendNearOfficeNotification', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ userId: userId })
+          });
+          const result = await response.json();
+          console.log('✅ Geofence notification sent:', result);
+          productionLogger.info('Geofence notification sent', result);
+        } catch (notifError) {
+          console.error('❌ Failed to send geofence notification:', notifError);
+          productionLogger.error('Failed to send geofence notification', notifError);
+        }
+
+        console.log('📍 Geofence enter: Completed all actions for', today);
+        productionLogger.info('Geofence enter completed', { date: today });
       } catch (taskError) {
         console.error('❌ Geofence enter handler failed:', taskError);
       }
@@ -1047,6 +1159,21 @@ export default function App() {
       // Initialize Firebase service with user ID
       await firebaseService.initialize(userId);
       
+      // Save app version and device info to Firebase
+      const appVersion = Application.nativeApplicationVersion || '3.0.0';
+      const buildNumber = Application.nativeBuildVersion || '5';
+      const deviceModel = Device.modelName || Device.deviceName || 'Unknown';
+      const osVersion = Device.osVersion || Platform.Version;
+      
+      await firebaseService.updateData('platform', Platform.OS);
+      await firebaseService.updateData('deviceModel', deviceModel);
+      await firebaseService.updateData('osVersion', osVersion);
+      await firebaseService.updateData('appVersion', `${appVersion} (${buildNumber})`);
+      await firebaseService.updateData('lastActive', Date.now());
+      
+      console.log(`📱 App Version: ${appVersion} (${buildNumber})`);
+      console.log(`📱 Device: ${deviceModel} - ${Platform.OS} ${osVersion}`);
+      
       // CRITICAL FIX: Check AsyncStorage FIRST before Firebase to prevent onboarding for existing users
       // This ensures users who update the app don't lose their data
       const localUserData = await AsyncStorage.getItem('userData');
@@ -1055,19 +1182,44 @@ export default function App() {
       // Load all data from Firebase (with local fallback) - includes holidays
       const allData = await firebaseService.getAllData();
       
-      // Check if this is a migration (data exists locally but not in Firebase)
-      const hasMigratedData = (allData.attendanceData && Object.keys(allData.attendanceData).length > 0) ||
-                              (allData.plannedDays && Object.keys(allData.plannedDays).length > 0);
+      // Check if this is a migration (data exists locally but needs to be uploaded to Firebase)
+      // CRITICAL FIX: Check Firebase flag first to allow manual override
+      const migrationCompleted = allData.migrationCompleted === true;
+      
+      if (migrationCompleted) {
+        console.log('✅ Migration already completed (flag set in Firebase), skipping...');
+      }
+      
+      // Only trigger migration if:
+      // 1. Migration flag is NOT set in Firebase (allows manual override)
+      // 2. AND data exists in Firebase (attendance or planned days)
+      // 3. AND lastUpdated is old or missing (indicating it came from AsyncStorage migration)
+      const isDataFromFirebase = allData.lastUpdated && (Date.now() - allData.lastUpdated < 60000); // Within last minute
+      const hasAttendanceInFirebase = allData.attendanceData && Object.keys(allData.attendanceData).length > 0;
+      const hasPlannedInFirebase = allData.plannedDays && Object.keys(allData.plannedDays).length > 0;
+      
+      // Only run migration if data was loaded from AsyncStorage (not from Firebase) AND migration not completed
+      const hasMigratedData = !migrationCompleted && (hasAttendanceInFirebase || hasPlannedInFirebase) && !isDataFromFirebase;
       
       // Check if user has completed setup - check LOCAL DATA FIRST, then Firebase
       const hasCompanyName = hasLocalData || (allData.userData?.companyName && allData.userData.companyName.trim() !== '');
       
       if (hasCompanyName) {
         // Existing user - load all data
-        // CRITICAL: Set default trackingMode to 'manual' if not present (for existing users upgrading)
+        // CRITICAL: Merge with default userData values to prevent crashes when userData section is missing
+        const defaultUserData = {
+          userId: null,
+          companyName: '',
+          companyLocation: null,
+          companyAddress: '',
+          trackingMode: 'manual',
+          country: 'australia'
+        };
+        
         const loadedUserData = {
-          ...allData.userData,
-          userId,
+          ...defaultUserData,  // Start with safe defaults
+          ...allData.userData, // Override with Firebase data (may be empty object)
+          userId,              // Always set current userId
           trackingMode: allData.userData?.trackingMode || 'manual' // Default to manual for existing users
         };
         setUserData(loadedUserData);
@@ -1075,6 +1227,24 @@ export default function App() {
         setPlannedDays(allData.plannedDays || {});
         setMonthlyTarget(allData.settings?.monthlyTarget || 15);
         setTargetMode(allData.settings?.targetMode || 'days');
+        
+        // CRITICAL FIX: If userData section is missing in Firebase, create it to prevent Cloud Function crashes
+        if (!allData.userData || Object.keys(allData.userData).length === 0) {
+          console.log('⚠️  WARNING: userData section missing in Firebase - creating it now');
+          productionLogger.warn('Missing userData section detected, creating default structure');
+          
+          const repairData = {
+            companyName: loadedUserData.companyName || '',
+            companyAddress: loadedUserData.companyAddress || '',
+            companyLocation: loadedUserData.companyLocation || null,
+            trackingMode: loadedUserData.trackingMode || 'manual',
+            country: loadedUserData.country || 'australia'
+          };
+          
+          await firebaseService.updateData('userData', repairData);
+          console.log('✅ userData section repaired in Firebase');
+          productionLogger.info('userData section repaired', repairData);
+        }
         
         // Set holidays from the data we already loaded
         if (allData.cachedHolidays && Object.keys(allData.cachedHolidays).length > 0) {
@@ -1102,10 +1272,20 @@ export default function App() {
           
           productionLogger.logMigration('started', migrationStats);
           
+          // Ensure userData has all required fields before saving
+          const completeUserData = {
+            userId: userId,
+            companyName: allData.userData?.companyName || loadedUserData.companyName || '',
+            companyAddress: allData.userData?.companyAddress || loadedUserData.companyAddress || '',
+            companyLocation: allData.userData?.companyLocation || loadedUserData.companyLocation || null,
+            trackingMode: allData.userData?.trackingMode || loadedUserData.trackingMode || 'manual',
+            country: allData.userData?.country || loadedUserData.country || 'australia'
+          };
+          
           const uploadSuccess = await firebaseService.saveAllData({
             attendanceData: allData.attendanceData || {},
             plannedDays: allData.plannedDays || {},
-            userData: { ...allData.userData, userId },
+            userData: completeUserData,
             monthlyTarget: allData.settings?.monthlyTarget || 15,
             targetMode: allData.settings?.targetMode || 'days',
             cachedHolidays: allData.cachedHolidays || {},
@@ -2942,7 +3122,24 @@ export default function App() {
         
         // Check if this is a location fallback notification
         const notificationType = response.notification.request.content.data?.type;
+        const autoLogType = response.notification.request.content.data?.autoLog;
+        const trackingMode = response.notification.request.content.data?.trackingMode;
+        
         console.log('Notification type:', notificationType);
+        console.log('Auto log type:', autoLogType);
+        console.log('Tracking mode:', trackingMode);
+        
+        // Auto-log if autoLog flag is present (from geofence in auto mode)
+        if (autoLogType && trackingMode === 'auto') {
+          console.log(`Auto-logging as ${autoLogType} from notification tap`);
+          const dateToLog = response.notification.request.content.data?.date || today;
+          markAttendance(dateToLog, autoLogType);
+          const emoji = autoLogType === 'office' ? '🏢' : '🏠';
+          const label = autoLogType === 'office' ? 'Office' : 'WFH';
+          Alert.alert(`${emoji} ${label} Logged!`, `✅ Attendance recorded for ${dateToLog}`, [{ text: 'OK' }]);
+          return;
+        }
+        
         console.log('Is location fallback?', notificationType === 'location_fallback');
         
         if (notificationType === 'location_fallback') {
@@ -4763,6 +4960,29 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               <Text style={styles.settingsItemValue}>{COUNTRY_DATA[userData.country || 'australia']?.name || 'Australia'}</Text>
               {isLoadingHolidays && <Text style={styles.settingsItemBadge}>Updating...</Text>}
             </View>
+          </TouchableOpacity>
+
+          {/* App Version Info */}
+          <TouchableOpacity 
+            style={styles.settingsItem}
+            onPress={() => {
+              const appVersion = Application.nativeApplicationVersion || '3.0.0';
+              const buildNumber = Application.nativeBuildVersion || '5';
+              const deviceModel = Device.modelName || Device.deviceName || 'Unknown';
+              const osVersion = Device.osVersion || Platform.Version;
+              
+              Alert.alert(
+                'App Information',
+                `Version: ${appVersion} (Build ${buildNumber})\n\nDevice: ${deviceModel}\nOS: ${Platform.OS} ${osVersion}\n\nUser ID: ${userData.userId?.substring(0, 30)}...`,
+                [{ text: 'OK' }]
+              );
+            }}
+          >
+            <Text style={styles.settingsItemIcon}>ℹ️</Text>
+            <Text style={styles.settingsItemText}>App Version</Text>
+            <Text style={styles.settingsItemValue}>
+              {Application.nativeApplicationVersion || '3.0.0'} ({Application.nativeBuildVersion || '5'})
+            </Text>
           </TouchableOpacity>
         </View>
 
