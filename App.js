@@ -411,6 +411,19 @@ const sendNotification = async (title, body, data = {}) => {
 // Firebase configuration
 const FIREBASE_URL = 'https://officetracker-mvp-default-rtdb.firebaseio.com/';
 
+// Google API Configuration (TODO: Move to secure environment variables in production)
+const GOOGLE_PLACES_API_KEY = 'AIzaSyBsAxs-hOPqsrmMZ2SvcUW0zhm2RHbvtW0';
+
+// Fetch with timeout to prevent UI freeze on slow networks
+const fetchWithTimeout = (url, timeout = 10000) => {
+  return Promise.race([
+    fetch(url),
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Request timeout - please check your internet connection')), timeout)
+    )
+  ]);
+};
+
 // Dynamic public holidays and companies based on user's location
 const COUNTRY_DATA = {
   australia: {
@@ -547,13 +560,22 @@ const getPopularCompanies = (country = 'australia') => {
   return COUNTRY_DATA[country]?.popularCompanies || COUNTRY_DATA.australia.popularCompanies;
 };
 
-// Dynamic public holidays fetching from Nager.Date API
-const fetchPublicHolidays = async (country = 'australia', year = new Date().getFullYear()) => {
-  const countryCode = COUNTRY_CODE_MAPPING[country] || 'AU';
+// Dynamic public holidays fetching from Nager.Date API (supports 100+ countries)
+const fetchPublicHolidays = async (countryIdentifier, year = new Date().getFullYear()) => {
+  // Support both country codes (AU, IN, US) and country names (australia, india, usa)
+  let countryCode = countryIdentifier;
+  
+  // If it's a country name, try to map it to a code
+  if (countryIdentifier.length > 2) {
+    countryCode = COUNTRY_CODE_MAPPING[countryIdentifier.toLowerCase()];
+  }
+  
+  // If still no code, use it as-is (might already be a valid 2-letter code)
+  countryCode = countryCode || countryIdentifier.toUpperCase();
   
   try {
-    console.log(`Fetching holidays for ${country} (${countryCode}) year ${year}`);
-    const response = await fetch(`https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`);
+    console.log(`Fetching holidays for ${countryIdentifier} (${countryCode}) year ${year}`);
+    const response = await fetchWithTimeout(`https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`, 8000);
     
     if (response.ok) {
       const holidays = await response.json();
@@ -565,14 +587,17 @@ const fetchPublicHolidays = async (country = 'australia', year = new Date().getF
           return acc;
         }, {});
       
-      console.log(`Fetched ${Object.keys(holidayData).length} public holidays for ${country} ${year}`);
+      console.log(`✅ Fetched ${Object.keys(holidayData).length} public holidays for ${countryCode} ${year}`);
       return holidayData;
+    } else if (response.status === 404) {
+      console.warn(`⚠️ Country code ${countryCode} not supported by Nager.Date API`);
+      return null;
     } else {
-      console.warn(`Failed to fetch holidays for ${country}: ${response.status}`);
+      console.warn(`Failed to fetch holidays for ${countryCode}: ${response.status}`);
       return null;
     }
   } catch (error) {
-    console.error(`Error fetching holidays for ${country}:`, error);
+    console.error(`Error fetching holidays for ${countryCode}:`, error);
     return null;
   }
 };
@@ -603,7 +628,9 @@ export default function App() {
     companyLocation: null,
     companyAddress: '',
     trackingMode: 'manual',
-    country: 'australia'
+    country: 'AU',  // Now uses country code directly
+    countryCode: 'AU',
+    countryName: 'Australia'
   });
   
   const [attendanceData, setAttendanceData] = useState({});
@@ -634,6 +661,14 @@ export default function App() {
   const [dataLoaded, setDataLoaded] = useState(false);
   const [companySearchText, setCompanySearchText] = useState('');
   const [showCompanyDropdown, setShowCompanyDropdown] = useState(false);
+  
+  // Company info edit modal
+  const [showEditCompanyModal, setShowEditCompanyModal] = useState(false);
+  const [editCompanyName, setEditCompanyName] = useState('');
+  const [editCompanyAddress, setEditCompanyAddress] = useState('');
+  
+  // Loading state for country detection
+  const [isDetectingCountry, setIsDetectingCountry] = useState(false);
   
   // Ref to track if we're currently syncing from Firebase (to prevent save loop)
   const isSyncingFromFirebase = useRef(false);
@@ -755,6 +790,85 @@ export default function App() {
       updateHolidaysForCountry(country, currentYear),
       updateHolidaysForCountry(country, nextYear)
     ]);
+  };
+
+  // Detect country from company address using geocoding
+  const detectCountryFromAddress = async (address) => {
+    if (!address || address.trim().length === 0) {
+      return { country: 'AU', countryCode: 'AU', countryName: 'Australia' }; // Default fallback
+    }
+    
+    try {
+      console.log(`🌍 Detecting country from address: "${address}"`);
+      
+      // Use Google Maps Geocoding API to get country (with 10s timeout)
+      const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${GOOGLE_PLACES_API_KEY}`;
+      const response = await fetchWithTimeout(geocodeUrl, 10000);
+      const data = await response.json();
+      
+      if (data.status === 'OK' && data.results && data.results.length > 0) {
+        const addressComponents = data.results[0].address_components;
+        
+        // Find the country component
+        const countryComponent = addressComponents.find(component => 
+          component.types.includes('country')
+        );
+        
+        if (countryComponent) {
+          const countryCode = countryComponent.short_name; // e.g., "AU", "IN", "US", "JP", "DE"
+          const countryName = countryComponent.long_name;  // e.g., "Australia", "India", "Japan"
+          
+          console.log(`✅ Detected country: ${countryName} (${countryCode})`);
+          
+          // Return countryCode as the primary identifier (works for all countries)
+          return { country: countryCode, countryCode, countryName };
+        }
+      }
+      
+      console.warn('⚠️ Could not detect country from address, using default');
+      return { country: 'AU', countryCode: 'AU', countryName: 'Australia' };
+      
+    } catch (error) {
+      console.error('Error detecting country:', error);
+      return { country: 'AU', countryCode: 'AU', countryName: 'Australia' };
+    }
+  };
+
+  // Update company info (from settings)
+  const updateCompanyInfo = async (newCompanyName, newCompanyAddress) => {
+    try {
+      // Detect country from address using geocoding
+      const { country: detectedCountry, countryCode, countryName } = await detectCountryFromAddress(newCompanyAddress);
+      
+      const updatedUserData = {
+        ...userData,
+        companyName: newCompanyName.trim() || '',
+        companyAddress: newCompanyAddress.trim() || '',
+        country: detectedCountry,
+        countryCode: countryCode,
+        countryName: countryName
+      };
+      
+      setUserData(updatedUserData);
+      await firebaseService.updateData('userData', updatedUserData);
+      
+      // Refresh holidays for the detected country
+      if (detectedCountry !== userData.country) {
+        console.log(`Country changed from ${userData.country} to ${detectedCountry}, refreshing holidays...`);
+        await updateCurrentYearHolidays(detectedCountry);
+      }
+      
+      Alert.alert(
+        '✅ Company Info Updated',
+        `Company: ${newCompanyName || 'Not set'}\nAddress: ${newCompanyAddress || 'Not set'}\n\nDetected country: ${countryName} (${countryCode})\n\nHolidays will be updated automatically.`
+      );
+      
+      return true;
+    } catch (error) {
+      console.error('Error updating company info:', error);
+      Alert.alert('Error', 'Failed to update company information. Please try again.');
+      return false;
+    }
   };
 
   // Get public holidays with caching (component version that can access state)
@@ -4770,6 +4884,25 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
 
         {/* Settings Options */}
         <View style={styles.settingsSection}>
+          {/* Company Info */}
+          <TouchableOpacity 
+            style={styles.settingsItem}
+            onPress={() => {
+              setEditCompanyName(userData.companyName || '');
+              setEditCompanyAddress(userData.companyAddress || '');
+              setShowEditCompanyModal(true);
+            }}
+          >
+            <Text style={styles.settingsItemIcon}>🏢</Text>
+            <View style={styles.settingsItemContent}>
+              <Text style={styles.settingsItemText}>Company Info</Text>
+              <Text style={styles.settingsItemSubtext}>
+                {userData.companyName || 'Not set'} • {userData.companyAddress || 'Not set'}
+              </Text>
+            </View>
+            <Text style={styles.settingsItemArrow}>›</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity 
             style={styles.settingsItem}
             onPress={() => {
@@ -5251,6 +5384,83 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             </View>
           </View>
         </Modal>
+
+        {/* Edit Company Info Modal */}
+        <Modal 
+          visible={showEditCompanyModal} 
+          animationType="slide" 
+          presentationStyle="overFullScreen"
+          transparent={true}
+        >
+          <View style={styles.targetModalOverlay}>
+            <View style={styles.targetModalContainer}>
+              <Text style={styles.targetModalTitle}>🏢 Edit Company Info</Text>
+              <Text style={styles.targetModalSubtitle}>
+                Update your company name and address
+              </Text>
+              
+              <TextInput
+                style={styles.targetModalInput}
+                value={editCompanyName}
+                onChangeText={setEditCompanyName}
+                placeholder="Company Name (e.g., Microsoft Australia)"
+                placeholderTextColor="#666666"
+                autoCapitalize="words"
+                selectTextOnFocus={true}
+                autoFocus={true}
+              />
+              
+              <TextInput
+                style={[styles.targetModalInput, { marginTop: 12 }]}
+                value={editCompanyAddress}
+                onChangeText={setEditCompanyAddress}
+                placeholder="Company Address (e.g., Sydney, NSW, Australia)"
+                placeholderTextColor="#666666"
+                autoCapitalize="words"
+                selectTextOnFocus={true}
+                multiline
+                numberOfLines={2}
+              />
+              
+              <Text style={styles.targetModalHint}>
+                💡 Tip: We'll detect your country from the address to show relevant holidays
+              </Text>
+              
+              <View style={styles.targetModalButtons}>
+                <TouchableOpacity 
+                  style={[styles.targetModalButton, styles.targetModalCancelButton]}
+                  onPress={() => setShowEditCompanyModal(false)}
+                >
+                  <Text style={styles.targetModalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={[
+                    styles.targetModalButton, 
+                    styles.targetModalSaveButton,
+                    isDetectingCountry && styles.disabledButton
+                  ]}
+                  disabled={isDetectingCountry}
+                  onPress={async () => {
+                    setIsDetectingCountry(true);
+                    try {
+                      const success = await updateCompanyInfo(editCompanyName, editCompanyAddress);
+                      if (success) {
+                        setShowEditCompanyModal(false);
+                      }
+                    } finally {
+                      setIsDetectingCountry(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.targetModalSaveText}>
+                    {isDetectingCountry ? '🌍 Detecting...' : 'Save'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   };
@@ -5647,12 +5857,44 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         <TouchableOpacity
           style={[
             styles.primaryButton, 
-            (!userData.companyName || !addressSearchText) && styles.disabledButton
+            (!userData.companyName || !addressSearchText || isDetectingCountry) && styles.disabledButton
           ]}
-          disabled={!userData.companyName || !addressSearchText}
-          onPress={() => setScreen('trackingMode')}
+          disabled={!userData.companyName || !addressSearchText || isDetectingCountry}
+          onPress={async () => {
+            try {
+              // Detect country from address before proceeding
+              setIsDetectingCountry(true);
+              // Update userData with detected country
+              const updatedData = {
+                ...userData,
+                country,
+                countryCode,
+                countryName
+              };
+              
+              setUserData(updatedData);
+              console.log(`✅ Country detected: ${countryName} (${countryCode})`);
+              
+              // Proceed to tracking mode selection
+              setScreen('trackingMode');
+            } catch (error) {
+              console.error('Error detecting country:', error);
+              // Don't block user if geocoding fails - use default
+              setUserData({
+                ...userData,
+                country: 'AU',
+                countryCode: 'AU',
+                countryName: 'Australia'
+              });
+              setScreen('trackingMode');
+            } finally {
+              setIsDetectingCountry(false);
+            }
+          }}
         >
-          <Text style={styles.primaryButtonText}>Continue</Text>
+          <Text style={styles.primaryButtonText}>
+            {isDetectingCountry ? '🌍 Detecting Country...' : 'Continue'}
+          </Text>
         </TouchableOpacity>
         </ScrollView>
     );
@@ -8655,6 +8897,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '500',
   },
+  settingsItemContent: {
+    flex: 1,
+  },
+  settingsItemSubtext: {
+    fontSize: 13,
+    color: '#888888',
+    marginTop: 4,
+  },
   settingsItemArrow: {
     fontSize: 16,
     color: '#666666',
@@ -8735,6 +8985,13 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     textAlign: 'center',
     marginBottom: 24,
+  },
+  targetModalHint: {
+    fontSize: 13,
+    color: '#888888',
+    textAlign: 'center',
+    marginBottom: 16,
+    lineHeight: 18,
   },
   targetModalButtons: {
     flexDirection: 'row',
