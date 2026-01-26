@@ -2,7 +2,7 @@
   "expo": {
     "name": "OfficeTrack",
     "slug": "officetrack",
-    "version": "3.0.1",
+    "version": "3.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -17,7 +17,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.officetrack.app",
-      "buildNumber": "6",
+      "buildNumber": "33",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "We use your location to automatically detect when you're at your office and mark your attendance. Location is checked only once per hour to save battery.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We use your location to automatically detect when you're at your office and mark your attendance. Location is checked only once per hour to save battery.",
@@ -38,7 +38,7 @@
         "backgroundColor": "#4F46E5"
       },
       "package": "com.officetrack.app",
-      "versionCode": 6,
+      "versionCode": 20,
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "ACCESS_COARSE_LOCATION",

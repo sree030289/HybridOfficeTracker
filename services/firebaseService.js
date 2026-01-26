@@ -4,6 +4,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import productionLogger from './productionLogger';
 
 /**
+ * Timeout wrapper for Firebase operations to prevent hanging
+ */
+const firebaseWithTimeout = (promise, timeoutMs = 30000) => {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Firebase operation timeout')), timeoutMs)
+    )
+  ]);
+};
+
+/**
  * Firebase Service for OfficeTracker
  * Provides reliable data persistence with offline support
  * 
@@ -54,7 +66,7 @@ class FirebaseService {
     try {
       console.log('📥 Fetching all data from Firebase...');
       const userRef = this.getUserRef();
-      const snapshot = await get(userRef);
+      const snapshot = await firebaseWithTimeout(get(userRef), 30000);
       
       if (snapshot.exists()) {
         const data = snapshot.val();
@@ -92,7 +104,7 @@ class FirebaseService {
       console.log('💾 Saving all data to Firebase...');
       
       // Get existing data first to preserve FCM token and other fields
-      const existingSnapshot = await get(this.getUserRef());
+      const existingSnapshot = await firebaseWithTimeout(get(this.getUserRef()), 30000);
       const existingData = existingSnapshot.exists() ? existingSnapshot.val() : {};
       
       const dataToSave = {
@@ -111,7 +123,7 @@ class FirebaseService {
 
       // Save to Firebase
       const userRef = this.getUserRef();
-      await set(userRef, dataToSave);
+      await firebaseWithTimeout(set(userRef, dataToSave), 30000);
       
       // Also save to local cache
       await this.cacheDataLocally(dataToSave);
@@ -169,7 +181,7 @@ class FirebaseService {
       updates['lastUpdated'] = Date.now();
       
       const userRef = this.getUserRef();
-      await update(userRef, updates);
+      await firebaseWithTimeout(update(userRef, updates), 30000);
       
       // Update local cache
       const localData = await this.getLocalData();

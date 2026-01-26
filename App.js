@@ -31,6 +31,48 @@ import firebaseService from './services/firebaseService';
 import fcmService from './services/fcmService';
 import productionLogger from './services/productionLogger';
 
+// Error Boundary to catch render crashes and prevent white screen
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    productionLogger.error('React Error Boundary caught error', error, {
+      componentStack: errorInfo.componentStack
+    });
+  }
+
+  handleRetry = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1A1A1A', padding: 20 }}>
+          <Text style={{ fontSize: 24, color: '#FFD700', marginBottom: 16, fontWeight: 'bold' }}>⚠️ Oops!</Text>
+          <Text style={{ fontSize: 16, color: '#FFFFFF', marginBottom: 24, textAlign: 'center' }}>
+            Something went wrong. Don't worry, your data is safe.
+          </Text>
+          <TouchableOpacity
+            onPress={this.handleRetry}
+            style={{ backgroundColor: '#FFD700', paddingHorizontal: 32, paddingVertical: 16, borderRadius: 12 }}
+          >
+            <Text style={{ color: '#1A1A1A', fontSize: 16, fontWeight: 'bold' }}>Try Again</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const OFFICE_GEOFENCE_TASK = 'OFFICE_GEOFENCE_TASK';
 const OFFICE_GEOFENCE_REGION_ID = 'office_region';
 const OFFICE_GEOFENCE_CONFIG_KEY = 'officetrack_office_geofence_config_v1';
@@ -138,7 +180,12 @@ const startOfficeGeofencingAsync = async (companyLocation) => {
         productionLogger.info('User already inside geofence on startup');
         
         // Manually trigger the same logic as geofence ENTER
-        const today = new Date().toISOString().split('T')[0];
+        const todayISO = new Date().toISOString();
+        const today = todayISO ? todayISO.split('T')[0] : null;
+        if (!today) {
+          console.warn("⚠️ Failed to get today's date");
+          return;
+        }
         const userId = await AsyncStorage.getItem('userId');
         
         if (userId) {
@@ -806,7 +853,7 @@ export default function App() {
       const response = await fetchWithTimeout(geocodeUrl, 10000);
       const data = await response.json();
       
-      if (data.status === 'OK' && data.results && data.results.length > 0) {
+      if (data.status === 'OK' && data.results && data.results.length > 0 && data.results[0]?.address_components) {
         const addressComponents = data.results[0].address_components;
         
         // Find the country component
@@ -1252,9 +1299,14 @@ export default function App() {
   // FCM token registration is now handled by fcmService
 
   const initializeApp = async () => {
-    try {
-      // Keep splash screen visible for 1500ms
-      await new Promise(resolve => setTimeout(resolve, 1500));
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('App initialization timeout')), 45000)
+    );
+
+    const initPromise = (async () => {
+      try {
+        // Keep splash screen visible for 1500ms
+        await new Promise(resolve => setTimeout(resolve, 1500));
       
       // Request notification permissions first
       const permissionGranted = await requestNotificationPermissions();
@@ -1501,6 +1553,21 @@ export default function App() {
         hasFirebaseService: !!firebaseService,
       });
       
+      setScreen('welcome');
+    }
+    })();
+
+    // Race between initialization and timeout
+    try {
+      await Promise.race([initPromise, timeoutPromise]);
+    } catch (error) {
+      console.error('Initialization timeout or error:', error);
+      productionLogger.error('App initialization timeout', error);
+      Alert.alert(
+        'Connection Issue',
+        'Taking too long to load. Please check your internet connection and try again.',
+        [{ text: 'Retry', onPress: () => initializeApp() }]
+      );
       setScreen('welcome');
     }
   };
@@ -2514,15 +2581,15 @@ export default function App() {
         else if (data.features && data.features.length > 0) {
           addresses = data.features.map(item => ({
             address: [
-              item.properties.name,
-              item.properties.street,
-              item.properties.city || item.properties.state,
-              item.properties.country
+              item.properties?.name,
+              item.properties?.street,
+              item.properties?.city || item.properties?.state,
+              item.properties?.country
             ].filter(Boolean).join(', '),
-            lat: item.geometry.coordinates[1],
-            lon: item.geometry.coordinates[0],
-            country: item.properties.country || '',
-            city: item.properties.city || ''
+            lat: item.geometry?.coordinates?.[1] || 0,
+            lon: item.geometry?.coordinates?.[0] || 0,
+            country: item.properties?.country || '',
+            city: item.properties?.city || ''
           }));
         }
         
@@ -3034,7 +3101,7 @@ export default function App() {
             'To automatically track your office attendance, we need permission to access your location in the background.\n\n' +
             'This allows us to:\n' +
             '• Check your location at 10am, 1pm, and 4pm (weekdays only)\n' +
-            '• Automatically log office attendance when you\'re at work\n' +
+            "• Automatically log office attendance when you're at work\n" +
             '• Reduce manual logging effort\n\n' +
             'Choose an option below:',
             [
@@ -3070,7 +3137,7 @@ export default function App() {
                     console.log('Background permission result:', status);
                     
                     if (status === 'granted') {
-                      Alert.alert('✅ Background Location Enabled', 'Automatic tracking is now active! We\'ll check your location at 10am, 1pm, and 4pm on weekdays.');
+                      Alert.alert('✅ Background Location Enabled', "Automatic tracking is now active! We'll check your location at 10am, 1pm, and 4pm on weekdays.");
                       // Re-setup auto tracking with background permission
                       if (userData.companyLocation) {
                         console.log('Re-setting up auto tracking with background permission');
@@ -3301,7 +3368,7 @@ export default function App() {
               '📍 Enable Automatic Tracking',
               'Would you like to enable automatic location tracking? This will:\n\n' +
               '• Check your location at 10am, 1pm, and 4pm (weekdays only)\n' +
-              '• Automatically log office attendance when you\'re at work\n' +
+              "• Automatically log office attendance when you're at work\n" +
               '• Reduce manual logging effort' +
               loggedMessage,
               [
@@ -3337,7 +3404,7 @@ export default function App() {
                       console.log('Background permission result:', status);
                       
                       if (status === 'granted') {
-                        Alert.alert('✅ Background Location Enabled', 'Automatic tracking is now active! We\'ll check your location at 10am, 1pm, and 4pm on weekdays.');
+                        Alert.alert('✅ Background Location Enabled', "Automatic tracking is now active! We'll check your location at 10am, 1pm, and 4pm on weekdays.");
                         // Re-setup auto tracking with background permission
                         if (userData.companyLocation) {
                           console.log('Re-setting up auto tracking with background permission');
@@ -3834,9 +3901,9 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         : (stats.office / monthlyTarget) * 100;
       
       if (targetProgress >= 100) {
-        insights.push({ emoji: '🎉', text: 'Congratulations! You\'ve achieved your office target!' });
+        insights.push({ emoji: '🎉', text: "Congratulations! You've achieved your office target!" });
       } else if (targetProgress >= 80) {
-        insights.push({ emoji: '🎯', text: 'You\'re very close to reaching your office target!' });
+        insights.push({ emoji: '🎯', text: "You're very close to reaching your office target!" });
       }
     }
     
@@ -4046,7 +4113,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                     style={styles.changeLogButton}
                     onPress={() => {
                       Alert.alert(
-                        'Change Today\'s Log',
+                        "Change Today's Log",
                         'What would you like to change it to?',
                         [
                           { text: '🏢 Office', onPress: () => markAttendance(todayStr, 'office') },
@@ -4064,7 +4131,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                     style={styles.clearLogButton}
                     onPress={() => {
                       Alert.alert(
-                        'Clear Today\'s Log',
+                        "Clear Today's Log",
                         'Are you sure you want to remove this attendance entry? This action cannot be undone.',
                         [
                           { text: 'Cancel', style: 'cancel' },
@@ -4425,7 +4492,10 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     for (let i = 0; i < 7; i++) {
       const date = new Date(startOfWeek);
       date.setDate(startOfWeek.getDate() + i);
-      const dateStr = date.toISOString().split('T')[0];
+      const dateISO = date.toISOString();
+      const dateStr = dateISO ? dateISO.split('T')[0] : null;
+      if (!dateStr) continue;
+      
       const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
       
       if (plannedDays[dateStr] === 'office') {
@@ -5027,7 +5097,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                       
                       Alert.alert(
                         '✅ Switched to Manual', 
-                        'You\'ll now receive 3 daily reminders on weekdays:\n• 10am: Morning check-in\n• 1pm: Afternoon check-in\n• 4pm: End of day reminder'
+                        "You'll now receive 3 daily reminders on weekdays:\n• 10am: Morning check-in\n• 1pm: Afternoon check-in\n• 4pm: End of day reminder"
                       );
                     }
                   },
@@ -5052,7 +5122,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                       if (permissionStatus !== 'granted') {
                         Alert.alert(
                           'Location Required',
-                          'Auto mode needs location permission to detect when you\'re at office. Please enable location access in your device settings.'
+                          "Auto mode needs location permission to detect when you're at office. Please enable location access in your device settings."
                         );
                         return;
                       }
@@ -5071,7 +5141,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                       
                       Alert.alert(
                         '✅ Switched to Smart Auto', 
-                        'Location-based tracking is now active. The app will automatically detect when you\'re at office.'
+                        "Location-based tracking is now active. The app will automatically detect when you're at office."
                       );
                     }
                   }
@@ -5644,16 +5714,17 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         });
 
         if (address && address[0]) {
+          const addr = address[0] || {};
           const fullAddress = [
-            address[0].street,
-            address[0].city,
-            address[0].region,
-            address[0].country
+            addr.street,
+            addr.city,
+            addr.region,
+            addr.country
           ].filter(Boolean).join(', ');
           
           // Detect country for holiday calendar and company suggestions
           let country = 'australia'; // default
-          const countryName = address[0].country?.toLowerCase() || '';
+          const countryName = addr.country?.toLowerCase() || '';
           
           if (countryName.includes('india')) country = 'india';
           else if (countryName.includes('united states') || countryName.includes('usa')) country = 'usa';
@@ -5985,7 +6056,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 if (fgStatus.status !== 'granted') {
                   Alert.alert(
                     'Location Permission Required',
-                    'Auto mode needs location access to detect when you\'re at office. Would you like to continue with Manual mode instead?',
+                    'Auto mode needs location access to detect when you're at office. Would you like to continue with Manual mode instead?',
                     [
                       { text: 'Cancel', style: 'cancel' },
                       { 
@@ -6083,7 +6154,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             if (monthlyTarget === 0) {
               Alert.alert(
                 '🎯 Set Your Monthly Target',
-                'Before we get started, let\'s set your monthly office attendance goal to help track your progress!',
+                "Before we get started, let's set your monthly office attendance goal to help track your progress!",
                 [
                   { text: 'Skip for Now', style: 'cancel', onPress: () => proceedWithSetup() },
                   { text: 'Set Target', onPress: () => showTargetSelectionDialog() }
@@ -9028,3 +9099,12 @@ const styles = StyleSheet.create({
     height: 32,
   },
 });
+
+// Wrap main App in ErrorBoundary
+export default function AppWrapper() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
