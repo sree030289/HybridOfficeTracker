@@ -31,6 +31,9 @@ import firebaseService from './services/firebaseService';
 import fcmService from './services/fcmService';
 import productionLogger from './services/productionLogger';
 
+// Calendarific API key for holiday fallback (free tier: 1000 requests/month)
+const CALENDARIFIC_API_KEY = '6bEZNQYum41DfBjIvxzElAkI5pIMcQx7';
+
 // Error Boundary to catch render crashes and prevent white screen
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -473,7 +476,8 @@ const fetchWithTimeout = (url, timeout = 10000) => {
 
 // Dynamic public holidays and companies based on user's location
 const COUNTRY_DATA = {
-  australia: {
+  // Now using country codes (AU, IN, US, GB, CA) as keys for consistency
+  AU: {
     name: 'Australia',
     publicHolidays: [
       '2024-01-01', '2024-01-26', '2024-03-29', '2024-04-01', '2024-04-25', 
@@ -504,7 +508,7 @@ const COUNTRY_DATA = {
   'Nine Entertainment Co.', 'Lottery Corporation (The)', 'ARS-Group (Australia)', 'A2 Milk Company', 'Aristocrat Leisure',
   'Bendigo Bank', 'Bank of Queensland']
   },
-  india: {
+  IN: {
     name: 'India',
     publicHolidays: [
       '2024-01-26', '2024-08-15', '2024-10-02', '2024-10-24', '2024-11-12',
@@ -523,7 +527,7 @@ const COUNTRY_DATA = {
     'Flipkart', 'Ola Cabs', 'MakeMyTrip', 'Delhivery', 'Nykaa','Infosys','Wipro','TCS','Accenture','CTS','CAPGemini'
   ]
   },
-  usa: {
+  US: {
     name: 'United States',
     publicHolidays: [
       '2024-01-01', '2024-07-04', '2024-11-28', '2024-12-25',
@@ -542,7 +546,7 @@ const COUNTRY_DATA = {
     'Home Depot', 'CVS Health', 'AbbVie', 'Caterpillar', 'PayPal'
   ]
   },
-  uk: {
+  GB: {
     name: 'United Kingdom',
     publicHolidays: [
       '2024-01-01', '2024-03-29', '2024-04-01', '2024-05-06', '2024-05-27',
@@ -563,7 +567,7 @@ const COUNTRY_DATA = {
     'Ocado', 'Persimmon', 'Taylor Wimpey', 'Kingfisher', 'ARM Holdings'
   ]
   },
-  canada: {
+  CA: {
     name: 'Canada',
     publicHolidays: [
       '2024-01-01', '2024-07-01', '2024-09-02', '2024-10-14', '2024-12-25',
@@ -585,66 +589,117 @@ const COUNTRY_DATA = {
 };
 
 // Backward compatibility - will be replaced with dynamic data
-const PUBLIC_HOLIDAYS = {
-  australia: COUNTRY_DATA.australia.publicHolidays,
-  india: COUNTRY_DATA.india.publicHolidays,
-  usa: COUNTRY_DATA.usa.publicHolidays,
-  uk: COUNTRY_DATA.uk.publicHolidays,
-  canada: COUNTRY_DATA.canada.publicHolidays
+const PUBLIC_HOLIDAYS = { // Legacy - will be removed
+  AU: COUNTRY_DATA.AU.publicHolidays,
+  IN: COUNTRY_DATA.IN.publicHolidays,
+  US: COUNTRY_DATA.US.publicHolidays,
+  GB: COUNTRY_DATA.GB.publicHolidays,
+  CA: COUNTRY_DATA.CA.publicHolidays
 };
 
-// Country code mapping for Nager.Date API
-const COUNTRY_CODE_MAPPING = {
-  australia: 'AU',
-  india: 'IN',
-  usa: 'US',
-  uk: 'GB',
-  canada: 'CA'
+// Country code to name mapping (100+ countries supported by Nager.Date API)
+const COUNTRY_NAMES = {
+  AD: 'Andorra', AE: 'United Arab Emirates', AF: 'Afghanistan', AG: 'Antigua and Barbuda',
+  AI: 'Anguilla', AL: 'Albania', AM: 'Armenia', AO: 'Angola', AQ: 'Antarctica',
+  AR: 'Argentina', AS: 'American Samoa', AT: 'Austria', AU: 'Australia', AW: 'Aruba',
+  AX: 'Åland Islands', AZ: 'Azerbaijan', BA: 'Bosnia and Herzegovina', BB: 'Barbados',
+  BD: 'Bangladesh', BE: 'Belgium', BF: 'Burkina Faso', BG: 'Bulgaria', BH: 'Bahrain',
+  BI: 'Burundi', BJ: 'Benin', BL: 'Saint Barthélemy', BM: 'Bermuda', BN: 'Brunei',
+  BO: 'Bolivia', BQ: 'Bonaire', BR: 'Brazil', BS: 'Bahamas', BT: 'Bhutan',
+  BV: 'Bouvet Island', BW: 'Botswana', BY: 'Belarus', BZ: 'Belize', CA: 'Canada',
+  CC: 'Cocos Islands', CD: 'Congo (DRC)', CF: 'Central African Republic', CG: 'Congo',
+  CH: 'Switzerland', CI: 'Côte d\'Ivoire', CK: 'Cook Islands', CL: 'Chile', CM: 'Cameroon',
+  CN: 'China', CO: 'Colombia', CR: 'Costa Rica', CU: 'Cuba', CV: 'Cape Verde',
+  CW: 'Curaçao', CX: 'Christmas Island', CY: 'Cyprus', CZ: 'Czech Republic', DE: 'Germany',
+  DJ: 'Djibouti', DK: 'Denmark', DM: 'Dominica', DO: 'Dominican Republic', DZ: 'Algeria',
+  EC: 'Ecuador', EE: 'Estonia', EG: 'Egypt', EH: 'Western Sahara', ER: 'Eritrea',
+  ES: 'Spain', ET: 'Ethiopia', FI: 'Finland', FJ: 'Fiji', FK: 'Falkland Islands',
+  FM: 'Micronesia', FO: 'Faroe Islands', FR: 'France', GA: 'Gabon', GB: 'United Kingdom',
+  GD: 'Grenada', GE: 'Georgia', GF: 'French Guiana', GG: 'Guernsey', GH: 'Ghana',
+  GI: 'Gibraltar', GL: 'Greenland', GM: 'Gambia', GN: 'Guinea', GP: 'Guadeloupe',
+  GQ: 'Equatorial Guinea', GR: 'Greece', GS: 'South Georgia', GT: 'Guatemala', GU: 'Guam',
+  GW: 'Guinea-Bissau', GY: 'Guyana', HK: 'Hong Kong', HM: 'Heard Island', HN: 'Honduras',
+  HR: 'Croatia', HT: 'Haiti', HU: 'Hungary', ID: 'Indonesia', IE: 'Ireland',
+  IL: 'Israel', IM: 'Isle of Man', IN: 'India', IO: 'British Indian Ocean Territory',
+  IQ: 'Iraq', IR: 'Iran', IS: 'Iceland', IT: 'Italy', JE: 'Jersey',
+  JM: 'Jamaica', JO: 'Jordan', JP: 'Japan', KE: 'Kenya', KG: 'Kyrgyzstan',
+  KH: 'Cambodia', KI: 'Kiribati', KM: 'Comoros', KN: 'Saint Kitts and Nevis', KP: 'North Korea',
+  KR: 'South Korea', KW: 'Kuwait', KY: 'Cayman Islands', KZ: 'Kazakhstan', LA: 'Laos',
+  LB: 'Lebanon', LC: 'Saint Lucia', LI: 'Liechtenstein', LK: 'Sri Lanka', LR: 'Liberia',
+  LS: 'Lesotho', LT: 'Lithuania', LU: 'Luxembourg', LV: 'Latvia', LY: 'Libya',
+  MA: 'Morocco', MC: 'Monaco', MD: 'Moldova', ME: 'Montenegro', MF: 'Saint Martin',
+  MG: 'Madagascar', MH: 'Marshall Islands', MK: 'North Macedonia', ML: 'Mali', MM: 'Myanmar',
+  MN: 'Mongolia', MO: 'Macao', MP: 'Northern Mariana Islands', MQ: 'Martinique', MR: 'Mauritania',
+  MS: 'Montserrat', MT: 'Malta', MU: 'Mauritius', MV: 'Maldives', MW: 'Malawi',
+  MX: 'Mexico', MY: 'Malaysia', MZ: 'Mozambique', NA: 'Namibia', NC: 'New Caledonia',
+  NE: 'Niger', NF: 'Norfolk Island', NG: 'Nigeria', NI: 'Nicaragua', NL: 'Netherlands',
+  NO: 'Norway', NP: 'Nepal', NR: 'Nauru', NU: 'Niue', NZ: 'New Zealand',
+  OM: 'Oman', PA: 'Panama', PE: 'Peru', PF: 'French Polynesia', PG: 'Papua New Guinea',
+  PH: 'Philippines', PK: 'Pakistan', PL: 'Poland', PM: 'Saint Pierre and Miquelon', PN: 'Pitcairn',
+  PR: 'Puerto Rico', PS: 'Palestine', PT: 'Portugal', PW: 'Palau', PY: 'Paraguay',
+  QA: 'Qatar', RE: 'Réunion', RO: 'Romania', RS: 'Serbia', RU: 'Russia',
+  RW: 'Rwanda', SA: 'Saudi Arabia', SB: 'Solomon Islands', SC: 'Seychelles', SD: 'Sudan',
+  SE: 'Sweden', SG: 'Singapore', SH: 'Saint Helena', SI: 'Slovenia', SJ: 'Svalbard and Jan Mayen',
+  SK: 'Slovakia', SL: 'Sierra Leone', SM: 'San Marino', SN: 'Senegal', SO: 'Somalia',
+  SR: 'Suriname', SS: 'South Sudan', ST: 'São Tomé and Príncipe', SV: 'El Salvador', SX: 'Sint Maarten',
+  SY: 'Syria', SZ: 'Eswatini', TC: 'Turks and Caicos Islands', TD: 'Chad', TF: 'French Southern Territories',
+  TG: 'Togo', TH: 'Thailand', TJ: 'Tajikistan', TK: 'Tokelau', TL: 'Timor-Leste',
+  TM: 'Turkmenistan', TN: 'Tunisia', TO: 'Tonga', TR: 'Turkey', TT: 'Trinidad and Tobago',
+  TV: 'Tuvalu', TW: 'Taiwan', TZ: 'Tanzania', UA: 'Ukraine', UG: 'Uganda',
+  UM: 'U.S. Minor Outlying Islands', US: 'United States', UY: 'Uruguay', UZ: 'Uzbekistan',
+  VA: 'Vatican City', VC: 'Saint Vincent and the Grenadines', VE: 'Venezuela', VG: 'British Virgin Islands',
+  VI: 'U.S. Virgin Islands', VN: 'Vietnam', VU: 'Vanuatu', WF: 'Wallis and Futuna', WS: 'Samoa',
+  YE: 'Yemen', YT: 'Mayotte', ZA: 'South Africa', ZM: 'Zambia', ZW: 'Zimbabwe'
 };
 
-// Dynamic popular companies based on location
-const getPopularCompanies = (country = 'australia') => {
-  return COUNTRY_DATA[country]?.popularCompanies || COUNTRY_DATA.australia.popularCompanies;
+// Get country name for any country code (supports 200+ countries)
+const getCountryName = (countryCode) => {
+  if (!countryCode) return 'Australia'; // Default
+  // Check COUNTRY_DATA first (has custom names), then fallback to ISO standard names
+  return COUNTRY_DATA[countryCode]?.name || COUNTRY_NAMES[countryCode] || countryCode;
+};
+
+// Dynamic popular companies based on country code
+// Returns empty array for countries without predefined list
+const getPopularCompanies = (countryCode = 'AU') => {
+  return COUNTRY_DATA[countryCode]?.popularCompanies || [];
 };
 
 // Dynamic public holidays fetching from Nager.Date API (supports 100+ countries)
-const fetchPublicHolidays = async (countryIdentifier, year = new Date().getFullYear()) => {
-  // Support both country codes (AU, IN, US) and country names (australia, india, usa)
-  let countryCode = countryIdentifier;
-  
-  // If it's a country name, try to map it to a code
-  if (countryIdentifier.length > 2) {
-    countryCode = COUNTRY_CODE_MAPPING[countryIdentifier.toLowerCase()];
-  }
-  
-  // If still no code, use it as-is (might already be a valid 2-letter code)
-  countryCode = countryCode || countryIdentifier.toUpperCase();
+const fetchPublicHolidays = async (countryCode, year = new Date().getFullYear()) => {
+  // countryCode should always be ISO 2-letter code (AU, IN, US, GB, CA, etc.)
+  const code = countryCode?.toUpperCase() || 'AU';
   
   try {
-    console.log(`Fetching holidays for ${countryIdentifier} (${countryCode}) year ${year}`);
-    const response = await fetchWithTimeout(`https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`, 8000);
+    // NEW: Fetch from Firebase Firestore (via Cloud Function)
+    // This replaces direct API calls and provides instant, cached results
+    console.log(`📅 Fetching holidays for ${code} ${year} from Firestore...`);
+    const holidays = await firebaseService.fetchHolidaysFromFirestore(code, year);
     
-    if (response.ok) {
-      const holidays = await response.json();
-      // Extract dates and names for 'Public' type holidays
-      const holidayData = holidays
-        .filter(holiday => holiday.types && holiday.types.includes('Public'))
-        .reduce((acc, holiday) => {
-          acc[holiday.date] = holiday.name;
+    if (holidays && Object.keys(holidays).length > 0) {
+      console.log(`✅ Loaded ${Object.keys(holidays).length} holidays for ${code} ${year} from Firestore`);
+      return holidays;
+    }
+    
+    // FALLBACK: If Firestore fetch fails, use static data
+    console.log(`📅 Firestore unavailable, checking static fallback for ${code} ${year}...`);
+    const staticHolidays = COUNTRY_DATA[code]?.publicHolidays || [];
+    if (staticHolidays.length > 0) {
+      const yearHolidays = staticHolidays.filter(date => date.startsWith(year.toString()));
+      if (yearHolidays.length > 0) {
+        const holidayData = yearHolidays.reduce((acc, date) => {
+          acc[date] = 'Public Holiday';
           return acc;
         }, {});
-      
-      console.log(`✅ Fetched ${Object.keys(holidayData).length} public holidays for ${countryCode} ${year}`);
-      return holidayData;
-    } else if (response.status === 404) {
-      console.warn(`⚠️ Country code ${countryCode} not supported by Nager.Date API`);
-      return null;
-    } else {
-      console.warn(`Failed to fetch holidays for ${countryCode}: ${response.status}`);
-      return null;
+        console.log(`✅ Using ${yearHolidays.length} static holidays for ${code} ${year}`);
+        return holidayData;
+      }
     }
+    
+    console.warn(`❌ No holidays available for ${code} ${year}`);
+    return null;
   } catch (error) {
-    console.error(`Error fetching holidays for ${countryCode}:`, error);
+    console.error(`❌ Error fetching holidays for ${countryCode}:`, error);
     return null;
   }
 };
@@ -663,8 +718,9 @@ const isCacheValid = (country, year, holidayLastUpdated) => {
 };
 
 // Static fallback function for when dynamic data isn't available
-const getStaticPublicHolidays = (country = 'australia') => {
-  return COUNTRY_DATA[country]?.publicHolidays || COUNTRY_DATA.australia.publicHolidays;
+// Returns empty array for countries without predefined holidays (will fetch from API)
+const getStaticPublicHolidays = (countryCode = 'AU') => {
+  return COUNTRY_DATA[countryCode]?.publicHolidays || [];
 };
 
 function App() {
@@ -675,9 +731,8 @@ function App() {
     companyLocation: null,
     companyAddress: '',
     trackingMode: 'manual',
-    country: 'AU',  // Now uses country code directly
-    countryCode: 'AU',
-    countryName: 'Australia'
+    country: 'AU',  // Country code for API calls (AU, US, IN, GB, CA, etc.)
+    countryName: 'Australia'  // Full country name for display
   });
   
   const [attendanceData, setAttendanceData] = useState({});
@@ -732,6 +787,7 @@ function App() {
   const [cachedHolidays, setCachedHolidays] = useState({}); // {country_year: [dates]}
   const [holidayLastUpdated, setHolidayLastUpdated] = useState({}); // {country_year: timestamp}
   const [isLoadingHolidays, setIsLoadingHolidays] = useState(false);
+  const [calendarKey, setCalendarKey] = useState(0); // Force calendar re-render when holidays update
 
 
 
@@ -802,30 +858,38 @@ function App() {
       return;
     }
 
-    console.log(`Updating holidays for ${country} ${year}...`);
+    console.log(`📅 Updating holidays for ${country} ${year}...`);
     setIsLoadingHolidays(true);
 
     const newHolidays = await fetchPublicHolidays(country, year);
     
     if (newHolidays) {
+      const count = Array.isArray(newHolidays) ? newHolidays.length : Object.keys(newHolidays).length;
+      console.log(`✅ Fetched ${count} holidays for ${country} ${year}:`, Object.keys(newHolidays).slice(0, 5));
+      
       const newCachedHolidays = { ...cachedHolidays, [cacheKey]: newHolidays };
       const newTimestamps = { ...holidayLastUpdated, [cacheKey]: Date.now() };
+      
+      console.log(`📅 Saving to cache with key: ${cacheKey}`);
+      console.log(`📅 Total cached countries:`, Object.keys(newCachedHolidays));
       
       // Update React state immediately so UI reflects changes
       setCachedHolidays(newCachedHolidays);
       setHolidayLastUpdated(newTimestamps);
       
       await saveCachedHolidays(newCachedHolidays, newTimestamps);
-      console.log(`Successfully updated holidays for ${country} ${year}`);
+      console.log(`💾 Successfully saved holidays for ${country} ${year} to Firebase and state`);
+      
+      // Force calendar to re-render with new holidays
+      setCalendarKey(prev => prev + 1);
       
       // Show success message only for manual updates (not automatic ones)
       if (country === userData.country) {
-        const countryName = COUNTRY_DATA[country]?.name || country;
-        const count = Array.isArray(newHolidays) ? newHolidays.length : Object.keys(newHolidays).length;
+        const countryName = getCountryName(country);
         console.log(`✅ Updated ${count} public holidays for ${countryName} ${year}`);
       }
     } else {
-      console.warn(`Failed to update holidays for ${country} ${year}, using static data`);
+      console.error(`❌ Failed to fetch holidays for ${country} ${year} from API`);
     }
     
     setIsLoadingHolidays(false);
@@ -846,7 +910,7 @@ function App() {
   // Detect country from company address using geocoding
   const detectCountryFromAddress = async (address) => {
     if (!address || address.trim().length === 0) {
-      return { country: 'AU', countryCode: 'AU', countryName: 'Australia' }; // Default fallback
+      return { country: 'AU', countryName: 'Australia' }; // Default fallback
     }
     
     try {
@@ -871,17 +935,17 @@ function App() {
           
           console.log(`✅ Detected country: ${countryName} (${countryCode})`);
           
-          // Return countryCode as the primary identifier (works for all countries)
-          return { country: countryCode, countryCode, countryName };
+          // Return only 2 fields: country (code) and countryName
+          return { country: countryCode, countryName };
         }
       }
       
       console.warn('⚠️ Could not detect country from address, using default');
-      return { country: 'AU', countryCode: 'AU', countryName: 'Australia' };
+      return { country: 'AU', countryName: 'Australia' };
       
     } catch (error) {
       console.error('Error detecting country:', error);
-      return { country: 'AU', countryCode: 'AU', countryName: 'Australia' };
+      return { country: 'AU', countryName: 'Australia' };
     }
   };
 
@@ -889,14 +953,13 @@ function App() {
   const updateCompanyInfo = async (newCompanyName, newCompanyAddress) => {
     try {
       // Detect country from address using geocoding
-      const { country: detectedCountry, countryCode, countryName } = await detectCountryFromAddress(newCompanyAddress);
+      const { country: detectedCountry, countryName } = await detectCountryFromAddress(newCompanyAddress);
       
       const updatedUserData = {
         ...userData,
         companyName: newCompanyName.trim() || '',
         companyAddress: newCompanyAddress.trim() || '',
         country: detectedCountry,
-        countryCode: countryCode,
         countryName: countryName
       };
       
@@ -905,13 +968,19 @@ function App() {
       
       // Refresh holidays for the detected country
       if (detectedCountry !== userData.country) {
-        console.log(`Country changed from ${userData.country} to ${detectedCountry}, refreshing holidays...`);
+        console.log(`🌍 Country changed from ${userData.country} to ${detectedCountry}, refreshing holidays...`);
         await updateCurrentYearHolidays(detectedCountry);
+        console.log(`✅ Holiday refresh completed for ${detectedCountry}`);
+        
+        // Force calendar to update
+        setCalendarKey(prev => prev + 1);
+      } else {
+        console.log(`ℹ️ Country unchanged (${detectedCountry}), keeping existing holidays`);
       }
       
       Alert.alert(
         '✅ Company Info Updated',
-        `Company: ${newCompanyName || 'Not set'}\nAddress: ${newCompanyAddress || 'Not set'}\n\nDetected country: ${countryName} (${countryCode})\n\nHolidays will be updated automatically.`
+        `Company: ${newCompanyName || 'Not set'}\nAddress: ${newCompanyAddress || 'Not set'}\n\nDetected country: ${countryName} (${detectedCountry})\n\nHolidays will be updated automatically.`
       );
       
       return true;
@@ -923,26 +992,30 @@ function App() {
   };
 
   // Get public holidays with caching (component version that can access state)
-  const getPublicHolidays = (country = 'australia', year = new Date().getFullYear()) => {
-    const cacheKey = getHolidayCacheKey(country, year);
+  const getPublicHolidays = (countryCode = 'AU', year = new Date().getFullYear()) => {
+    const cacheKey = getHolidayCacheKey(countryCode, year);
     
-    // Return cached holidays if available and valid
-    if (cachedHolidays[cacheKey] && isCacheValid(country, year, holidayLastUpdated)) {
+    // Return cached holidays if available (regardless of timestamp for display)
+    if (cachedHolidays[cacheKey]) {
       const cached = cachedHolidays[cacheKey];
       // Handle both object format (new) and array format (old)
-      return Array.isArray(cached) ? cached : Object.keys(cached);
+      const holidays = Array.isArray(cached) ? cached : Object.keys(cached);
+      console.log(`✅ getPublicHolidays(${countryCode}, ${year}): Found ${holidays.length} holidays in cache`);
+      return holidays;
     }
     
-    // Return static fallback data while loading new data
-    return getStaticPublicHolidays(country);
+    // Return static fallback data if no cached data exists
+    const staticHolidays = getStaticPublicHolidays(countryCode);
+    console.log(`⚠️ getPublicHolidays(${countryCode}, ${year}): Using ${staticHolidays.length} static holidays (no cache)`);
+    return staticHolidays;
   };
 
   // Get holiday name for a specific date
-  const getHolidayName = (dateStr, country = 'australia', year = new Date().getFullYear()) => {
-    const cacheKey = getHolidayCacheKey(country, year);
+  const getHolidayName = (dateStr, countryCode = 'AU', year = new Date().getFullYear()) => {
+    const cacheKey = getHolidayCacheKey(countryCode, year);
     
     // Check cached holidays for name
-    if (cachedHolidays[cacheKey] && isCacheValid(country, year, holidayLastUpdated)) {
+    if (cachedHolidays[cacheKey] && isCacheValid(countryCode, year, holidayLastUpdated)) {
       const cached = cachedHolidays[cacheKey];
       if (!Array.isArray(cached) && cached[dateStr]) {
         return cached[dateStr];
@@ -1228,7 +1301,7 @@ function App() {
         companyLocation: null,
         companyAddress: '',
         trackingMode: 'manual',
-        country: 'australia'
+        country: 'AU'
       });
       setAttendanceData({});
       setPlannedDays({});
@@ -1383,7 +1456,7 @@ function App() {
           companyLocation: null,
           companyAddress: '',
           trackingMode: 'manual',
-          country: 'australia'
+          country: 'AU'
         };
         
         const loadedUserData = {
@@ -1408,7 +1481,7 @@ function App() {
             companyAddress: loadedUserData.companyAddress || '',
             companyLocation: loadedUserData.companyLocation || null,
             trackingMode: loadedUserData.trackingMode || 'manual',
-            country: loadedUserData.country || 'australia'
+            country: loadedUserData.country || 'AU'
           };
           
           await firebaseService.updateData('userData', repairData);
@@ -1467,7 +1540,7 @@ function App() {
             companyAddress: allData.userData?.companyAddress || loadedUserData.companyAddress || '',
             companyLocation: allData.userData?.companyLocation || loadedUserData.companyLocation || null,
             trackingMode: allData.userData?.trackingMode || loadedUserData.trackingMode || 'manual',
-            country: allData.userData?.country || loadedUserData.country || 'australia'
+            country: allData.userData?.country || loadedUserData.country || 'AU'
           };
           
           const uploadSuccess = await firebaseService.saveAllData({
@@ -1502,22 +1575,35 @@ function App() {
         // CRITICAL FIX: Load holidays BEFORE showing calendar screen
         // This ensures holidays are displayed immediately without requiring manual refresh
         if (allData.cachedHolidays && Object.keys(allData.cachedHolidays).length > 0) {
-          console.log('📅 Holidays loaded from Firebase');
+          console.log('📅 Holidays loaded from Firebase:', Object.keys(allData.cachedHolidays));
+          console.log('📅 Sample holiday data:', JSON.stringify(allData.cachedHolidays).substring(0, 200));
           setCachedHolidays(allData.cachedHolidays);
           if (allData.holidayLastUpdated) {
+            console.log('📅 Holiday timestamps:', Object.keys(allData.holidayLastUpdated));
             setHolidayLastUpdated(allData.holidayLastUpdated);
           }
+        } else {
+          console.log('⚠️ No cached holidays found in Firebase');
         }
         
         // Auto-update holidays for user's country if not exists or outdated
         if (allData.userData?.country) {
           const currentYear = new Date().getFullYear();
-          const cacheKey = getHolidayCacheKey(allData.userData.country, currentYear);
+          const nextYear = currentYear + 1;
+          const currentCacheKey = getHolidayCacheKey(allData.userData.country, currentYear);
+          const nextCacheKey = getHolidayCacheKey(allData.userData.country, nextYear);
+          console.log('📅 Checking holidays for', allData.userData.country, 'with cache keys:', currentCacheKey, nextCacheKey);
           
-          // Only fetch if we don't have holidays or they're outdated
-          if (!allData.cachedHolidays?.[cacheKey] || !isCacheValid(allData.userData.country, currentYear, allData.holidayLastUpdated || {})) {
-            console.log('📅 Fetching latest holidays for', allData.userData.country);
+          // Check if we need to fetch holidays
+          const needsCurrentYear = !allData.cachedHolidays?.[currentCacheKey] || !isCacheValid(allData.userData.country, currentYear, allData.holidayLastUpdated || {});
+          const needsNextYear = !allData.cachedHolidays?.[nextCacheKey];
+          
+          // Only fetch if cache is missing or outdated (> 30 days)
+          if (needsCurrentYear || needsNextYear) {
+            console.log(`📅 Fetching holidays for ${allData.userData.country} (current: ${needsCurrentYear}, next: ${needsNextYear})`);
             await updateCurrentYearHolidays(allData.userData.country);
+          } else {
+            console.log('✅ Using cached holidays for', allData.userData.country, '(valid cache found)');
           }
         }
         
@@ -1533,6 +1619,15 @@ function App() {
           setPlannedDays(syncedData.plannedDays || {});
           setMonthlyTarget(syncedData.settings?.monthlyTarget || 15);
           setTargetMode(syncedData.settings?.targetMode || 'days');
+          
+          // CRITICAL: Also sync holidays data
+          if (syncedData.cachedHolidays) {
+            console.log('🔄 Syncing holidays from Firebase');
+            setCachedHolidays(syncedData.cachedHolidays);
+          }
+          if (syncedData.holidayLastUpdated) {
+            setHolidayLastUpdated(syncedData.holidayLastUpdated);
+          }
         });
         
         // Setup notifications based on tracking mode
@@ -2499,15 +2594,15 @@ function App() {
     try {
       // Create country filter for API based on user's location
       let countryCode = '';
-      const userCountry = userData.country || 'australia';
+      const userCountry = userData.country || 'AU';
       
-      // Map our country codes to API compatible codes
+      // Map our country codes to API compatible codes (lowercase)
       const countryMapping = {
-        australia: 'au',
-        india: 'in', 
-        usa: 'us',
-        uk: 'gb',
-        canada: 'ca'
+        AU: 'au',
+        IN: 'in', 
+        US: 'us',
+        GB: 'gb',
+        CA: 'ca'
       };
       
       countryCode = countryMapping[userCountry] || 'au';
@@ -3655,7 +3750,7 @@ function App() {
     let weekendDays = 0;
     let publicHolidayDays = 0;
     
-    const publicHolidays = getPublicHolidays(userData.country || 'australia');
+    const publicHolidays = getPublicHolidays(userData.country || 'AU');
     
     // Count attendance and calculate working days correctly
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
@@ -3945,7 +4040,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         const isCurrentMonth = currentDate.getMonth() === month;
         const isPast = currentDate < today && dateStr !== todayStr;
         const isWeekend = isWeekendDate(dateStr);
-        const isHoliday = getPublicHolidays(userData.country || 'australia').includes(dateStr);
+        const isHoliday = getPublicHolidays(userData.country || 'AU').includes(dateStr);
         const isPlanned = plannedDays[dateStr] === 'office';
         const isWFHPlanned = plannedDays[dateStr] === 'wfh';
         // Allow holidays to be selectable, only disable weekends and past/future months
@@ -4094,7 +4189,11 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
     const todayAttendance = attendanceData[todayStr];
     
     return (
-      <ScrollView style={styles.homeContainer} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        key={`home-${calendarKey}`} 
+        style={styles.homeContainer} 
+        showsVerticalScrollIndicator={false}
+      >
         {/* Quick Log for Today Section */}
         {isToday && (
           <View style={styles.quickLogContainer}>
@@ -4679,7 +4778,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
               const isToday = dateStr === todayStr;
               const isWeekend = isWeekendDate(dateStr);
-              const isHoliday = getPublicHolidays(userData.country || 'australia').includes(dateStr);
+              const isHoliday = getPublicHolidays(userData.country || 'AU').includes(dateStr);
               const isSelected = selectedDates.includes(dateStr);
               const attendance = attendanceData[dateStr];
               
@@ -5161,29 +5260,35 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
           <TouchableOpacity 
             style={styles.settingsItem}
             onPress={() => {
-              const countryData = COUNTRY_DATA[userData.country || 'australia'];
+              // Get country code and name (works for all 200+ countries)
+              const countryCode = userData.country || 'AU';
+              const countryName = userData.countryName || getCountryName(countryCode);
+              const hasStaticData = !!COUNTRY_DATA[countryCode];
+              
               const currentYear = new Date().getFullYear();
-              const cacheKey = getHolidayCacheKey(userData.country || 'australia', currentYear);
+              const cacheKey = getHolidayCacheKey(countryCode, currentYear);
               const lastUpdate = holidayLastUpdated[cacheKey];
-              const isValid = isCacheValid(userData.country || 'australia', currentYear, holidayLastUpdated);
+              const isValid = isCacheValid(countryCode, currentYear, holidayLastUpdated);
               
               let statusText = '';
               if (lastUpdate) {
                 const updateDate = new Date(lastUpdate).toLocaleDateString();
                 statusText = `\nHolidays last updated: ${updateDate}${isValid ? ' ✅' : ' (outdated)'}`;
-              } else {
+              } else if (hasStaticData) {
                 statusText = '\nHolidays: Using static data 📋';
+              } else {
+                statusText = '\nHolidays will be fetched from API 🌐';
               }
               
               Alert.alert(
                 '🌍 Location & Holidays',
-                `Detected Country: ${countryData.name}\n\nPublic holidays and company suggestions are customized for ${countryData.name}.${statusText}`,
+                `Detected Country: ${countryName} (${countryCode})\n\nPublic holidays are ${hasStaticData ? 'cached locally and' : ''} fetched dynamically from Nager.Date API.\n\nCompany suggestions: ${hasStaticData ? 'Available' : 'Use search'}.${statusText}`,
                 [
                   { text: 'Cancel', style: 'cancel' },
                   { 
                     text: '🔄 Refresh Holidays', 
                     onPress: () => {
-                      updateCurrentYearHolidays(userData.country || 'australia');
+                      updateCurrentYearHolidays(countryCode);
                       Alert.alert('Holiday Update', 'Refreshing public holidays data...');
                     }
                   }
@@ -5194,7 +5299,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             <Text style={styles.settingsItemIcon}>🌍</Text>
             <Text style={styles.settingsItemText}>Location & Holidays</Text>
             <View style={styles.settingsItemRightContainer}>
-              <Text style={styles.settingsItemValue}>{COUNTRY_DATA[userData.country || 'australia']?.name || 'Australia'}</Text>
+              <Text style={styles.settingsItemValue}>{userData.countryName || getCountryName(userData.country)}</Text>
               {isLoadingHolidays && <Text style={styles.settingsItemBadge}>Updating...</Text>}
             </View>
           </TouchableOpacity>
@@ -5528,9 +5633,28 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 <TextInput
                   style={[styles.targetModalInput, { marginTop: 12 }]}
                   value={editCompanyAddress}
-                  onChangeText={(text) => {
+                  onChangeText={async (text) => {
                     setEditCompanyAddress(text);
-                    handleAddressSearch(text);
+                    
+                    // Debounced address search for Edit modal
+                    if (text.length >= 3) {
+                      setIsLoadingAddresses(true);
+                      setShowAddressDropdown(true);
+                      
+                      try {
+                        const suggestions = await searchAddresses(text);
+                        setAddressSuggestions(suggestions);
+                        setIsLoadingAddresses(false);
+                      } catch (error) {
+                        console.log('Address search error:', error);
+                        setIsLoadingAddresses(false);
+                        setAddressSuggestions([]);
+                      }
+                    } else {
+                      setShowAddressDropdown(false);
+                      setAddressSuggestions([]);
+                      setIsLoadingAddresses(false);
+                    }
                   }}
                   placeholder="Company Address (e.g., Sydney, NSW, Australia)"
                   placeholderTextColor="#666666"
@@ -5742,24 +5866,18 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
       }
     };
 
-    const handleAddressSelect = (address) => {
+    const handleAddressSelect = async (address) => {
       setAddressSearchText(address.address);
       
-      // Detect country for holiday calendar and company suggestions
-      let country = 'australia'; // default
-      const countryName = address.country?.toLowerCase() || '';
-      
-      if (countryName.includes('india')) country = 'india';
-      else if (countryName.includes('united states') || countryName.includes('usa')) country = 'usa';
-      else if (countryName.includes('united kingdom') || countryName.includes('uk') || countryName.includes('great britain')) country = 'uk';
-      else if (countryName.includes('canada')) country = 'canada';
-      else if (countryName.includes('australia')) country = 'australia';
+      // Use proper geocoding to detect country (supports all countries)
+      const { country, countryName } = await detectCountryFromAddress(address.address);
       
       setUserData({
         ...userData,
         companyLocation: { latitude: address.lat, longitude: address.lon },
         companyAddress: address.address,
-        country
+        country,
+        countryName
       });
       setShowAddressDropdown(false);
       setAddressSuggestions([]);
@@ -5803,15 +5921,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             addr.country
           ].filter(Boolean).join(', ');
           
-          // Detect country for holiday calendar and company suggestions
-          let country = 'australia'; // default
-          const countryName = addr.country?.toLowerCase() || '';
-          
-          if (countryName.includes('india')) country = 'india';
-          else if (countryName.includes('united states') || countryName.includes('usa')) country = 'usa';
-          else if (countryName.includes('united kingdom') || countryName.includes('uk') || countryName.includes('great britain')) country = 'uk';
-          else if (countryName.includes('canada')) country = 'canada';
-          else if (countryName.includes('australia')) country = 'australia';
+          // Use proper geocoding to detect country (supports all countries)
+          const { country, countryName } = await detectCountryFromAddress(fullAddress);
           
           setAddressSearchText(fullAddress);
           setLocationSet(true);
@@ -5819,7 +5930,8 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             ...userData,
             companyLocation: location.coords,
             companyAddress: fullAddress,
-            country
+            country,
+            countryName
           });
         }
       } catch (error) {
@@ -6039,7 +6151,6 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               setUserData({
                 ...userData,
                 country: 'AU',
-                countryCode: 'AU',
                 countryName: 'Australia'
               });
               setScreen('trackingMode');
@@ -6194,16 +6305,22 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 await fcmService.initialize(userId);
               }
               
-              // Initialize Firebase service and save all setup data
+              // Initialize Firebase service
               await firebaseService.initialize(userId);
+              
+              // Fetch holidays for the detected country BEFORE saving
+              console.log(`🎉 Fetching holidays for ${finalUserData.countryName} (${finalUserData.country}) during onboarding...`);
+              await updateCurrentYearHolidays(finalUserData.country);
+              
+              // Save all setup data (holidays will be saved by updateCurrentYearHolidays)
               await firebaseService.saveAllData({
                 userData: finalUserData,
                 attendanceData: {},
                 plannedDays: {},
                 monthlyTarget,
                 targetMode,
-                cachedHolidays: {},
-                holidayLastUpdated: {}
+                cachedHolidays,
+                holidayLastUpdated
               });
 
               // Save setup completion timestamp locally
@@ -6225,6 +6342,15 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 setPlannedDays(syncedData.plannedDays || {});
                 setMonthlyTarget(syncedData.settings?.monthlyTarget || 15);
                 setTargetMode(syncedData.settings?.targetMode || 'days');
+                
+                // CRITICAL: Also sync holidays data
+                if (syncedData.cachedHolidays) {
+                  console.log('🔄 Syncing holidays from Firebase');
+                  setCachedHolidays(syncedData.cachedHolidays);
+                }
+                if (syncedData.holidayLastUpdated) {
+                  setHolidayLastUpdated(syncedData.holidayLastUpdated);
+                }
               });
 
               // Navigate to home screen - no sample data for new users

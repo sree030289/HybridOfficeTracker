@@ -3,6 +3,9 @@ import { ref, set, get, update, onValue, off } from 'firebase/database';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import productionLogger from './productionLogger';
 
+// Firebase Cloud Function URL for holidays
+const FIREBASE_FUNCTION_BASE_URL = 'https://us-central1-officetrack-a45dc.cloudfunctions.net';
+
 /**
  * Timeout wrapper for Firebase operations to prevent hanging
  */
@@ -525,7 +528,40 @@ class FirebaseService {
       return false;
     }
   }
+
+  /**
+   * Fetch holidays from Firebase Cloud Function / Firestore
+   * This replaces direct API calls to Nager.Date and Calendarific
+   */
+  async fetchHolidaysFromFirestore(countryCode, year = new Date().getFullYear()) {
+    try {
+      console.log(`📅 Fetching holidays from Firestore for ${countryCode} ${year}...`);
+      
+      const response = await fetch(
+        `${FIREBASE_FUNCTION_BASE_URL}/getHolidays?countryCode=${countryCode}&year=${year}`,
+        { timeout: 10000 }
+      );
+      
+      if (!response.ok) {
+        console.warn(`⚠️ Firestore holidays fetch failed: ${response.status}`);
+        return null;
+      }
+      
+      const data = await response.json();
+      
+      if (data.success && data.holidays) {
+        console.log(`✅ Fetched ${Object.keys(data.holidays).length} holidays for ${countryCode} from ${data.cached ? 'cache' : 'fresh sync'}`);
+        return data.holidays;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(`❌ Error fetching holidays from Firestore:`, error.message);
+      return null;
+    }
+  }
 }
+
 
 // Export singleton instance
 export default new FirebaseService();

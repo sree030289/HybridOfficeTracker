@@ -10,6 +10,7 @@
 
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
+const fetch = require('node-fetch');
 
 admin.initializeApp();
 
@@ -868,3 +869,289 @@ exports.sendTestNotification = functions.https.onRequest(async (req, res) => {
     res.status(500).send({ success: false, error: error.message });
   }
 });
+
+/**
+ * =====================================================
+ * HOLIDAY SYNC FUNCTIONS
+ * =====================================================
+ */
+
+// API Keys
+const CALENDARIFIC_API_KEY = '6bEZNQYum41DfBjIvxzElAkI5pIMcQx7';
+
+// Countries supported by Nager.Date API (119 countries)
+const NAGER_SUPPORTED_COUNTRIES = [
+  'AD', 'AL', 'AM', 'AR', 'AT', 'AU', 'AX', 'BA', 'BB', 'BE', 'BG', 'BJ', 'BO', 'BR', 'BS', 'BW', 'BY', 'BZ', 
+  'CA', 'CD', 'CG', 'CH', 'CL', 'CN', 'CO', 'CR', 'CU', 'CY', 'CZ', 'DE', 'DK', 'DO', 'EC', 'EE', 'EG', 'ES', 
+  'FI', 'FO', 'FR', 'GA', 'GB', 'GD', 'GE', 'GG', 'GH', 'GI', 'GL', 'GM', 'GR', 'GT', 'GY', 'HK', 'HN', 'HR', 
+  'HT', 'HU', 'ID', 'IE', 'IM', 'IS', 'IT', 'JE', 'JM', 'JP', 'KE', 'KR', 'KZ', 'LI', 'LS', 'LT', 'LU', 'LV', 
+  'MA', 'MC', 'MD', 'ME', 'MG', 'MK', 'MN', 'MS', 'MT', 'MX', 'MZ', 'NA', 'NE', 'NG', 'NI', 'NL', 'NO', 'NZ', 
+  'PA', 'PE', 'PG', 'PH', 'PL', 'PR', 'PT', 'PY', 'RO', 'RS', 'RU', 'SE', 'SG', 'SI', 'SJ', 'SK', 'SM', 'SR', 
+  'SV', 'TN', 'TR', 'UA', 'US', 'UY', 'VA', 'VE', 'VN', 'ZA', 'ZW'
+];
+
+// High-priority countries to sync (add more as needed)
+const PRIORITY_COUNTRIES = [
+  'AU', 'IN', 'US', 'GB', 'CA', 'BR', 'JP', 'CN', 'DE', 'FR', 'IT', 'ES', 
+  'NZ', 'SG', 'MY', 'PH', 'ID', 'TH', 'VN', 'KR', 'AE', 'SA', 'ZA', 'NG'
+];
+
+/**
+ * Fetch holidays from Nager.Date API
+ */
+async function fetchFromNagerDate(countryCode, year) {
+  try {
+    const response = await fetch(`https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`);
+    
+    if (!response.ok) {
+      return null;
+    }
+    
+    const holidays = await response.json();
+    const holidayData = {};
+    
+    holidays
+      .filter(holiday => holiday.types && holiday.types.includes('Public'))
+      .forEach(holiday => {
+        holidayData[holiday.date] = holiday.name;
+      });
+    
+    return holidayData;
+  } catch (error) {
+    console.error(`Nager.Date error for ${countryCode}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch holidays from Calendarific API
+ */
+async function fetchFromCalendarific(countryCode, year) {
+  try {
+    const response = await fetch(
+      `https://calendarific.com/api/v2/holidays?api_key=${CALENDARIFIC_API_KEY}&country=${countryCode}&year=${year}`
+    );
+    
+    if (!response.ok) {
+      return null;
+    }
+    
+    const data = await response.json();
+    
+    if (!data.response || !data.response.holidays) {
+      return null;
+    }
+    
+    const holidayData = {};
+    
+    data.response.holidays
+      .filter(holiday => 
+        holiday.type && (
+          holiday.type.includes('National holiday') ||
+          holiday.type.includes('Public holiday') ||
+          holiday.type.includes('Federal Holiday')
+        )
+      )
+      .forEach(holiday => {
+        holidayData[holiday.date.iso] = holiday.name;
+      });
+    
+    return holidayData;
+  } catch (error) {
+    console.error(`Calendarific error for ${countryCode}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Sync holidays for a specific country and year
+ */
+async function syncCountryHolidays(countryCode, year) {
+  console.log(`Syncing holidays for ${countryCode} ${year}...`);
+  
+  let holidays = null;
+  let source = null;
+  
+  // Try Nager.Date first (free, no rate limits)
+  if (NAGER_SUPPORTED_COUNTRIES.includes(countryCode)) {
+    holidays = await fetchFromNagerDate(countryCode, year);
+    if (holidays && Object.keys(holidays).length > 0) {
+      source = 'nager';
+    }
+  }
+  
+  // Fallback to Calendarific if Nager.Date failed
+  if (!holidays) {
+    holidays = await fetchFromCalendarific(countryCode, year);
+    if (holidays && Object.keys(holidays).length > 0) {
+      source = 'calendarific';
+    }
+  }
+  
+  if (!holidays || Object.keys(holidays).length === 0) {
+    console.log(`No holidays found for ${countryCode} ${year}`);
+    return null;
+  }
+  
+  // Store in Firestore
+  const db = admin.firestore();
+  const docRef = db.collection('holidays').doc(`${countryCode}_${year}`);
+  
+  await docRef.set({
+    countryCode,
+    year,
+    holidays,
+    source,
+    syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+    holidayCount: Object.keys(holidays).length
+  });
+  
+  console.log(`✅ Synced ${Object.keys(holidays).length} holidays for ${countryCode} ${year} from ${source}`);
+  return holidays;
+}
+
+/**
+ * Scheduled function: Sync holidays for all priority countries
+ * Runs on the 1st of every month at 2 AM
+ */
+exports.syncAllHolidays = functions.pubsub
+  .schedule('0 2 1 * *')
+  .timeZone('UTC')
+  .onRun(async (context) => {
+    console.log('Starting monthly holiday sync...');
+    
+    const currentYear = new Date().getFullYear();
+    const nextYear = currentYear + 1;
+    const results = { success: 0, failed: 0 };
+    
+    // Sync priority countries for current and next year
+    for (const country of PRIORITY_COUNTRIES) {
+      try {
+        await syncCountryHolidays(country, currentYear);
+        await syncCountryHolidays(country, nextYear);
+        results.success += 2;
+        
+        // Rate limiting: wait 1 second between countries
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (error) {
+        console.error(`Failed to sync ${country}:`, error.message);
+        results.failed += 2;
+      }
+    }
+    
+    console.log(`Holiday sync complete: ${results.success} synced, ${results.failed} failed`);
+    return results;
+  });
+
+/**
+ * HTTP function: Manually trigger holiday sync for specific country
+ * Usage: POST /syncHolidays with body: { countryCode: 'IN', year: 2026 }
+ */
+exports.syncHolidays = functions.https.onRequest(async (req, res) => {
+  // Enable CORS
+  res.set('Access-Control-Allow-Origin', '*');
+  
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'POST');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(204).send('');
+    return;
+  }
+  
+  try {
+    const { countryCode, year } = req.body;
+    
+    if (!countryCode) {
+      res.status(400).send({ error: 'countryCode is required' });
+      return;
+    }
+    
+    const yearToSync = year || new Date().getFullYear();
+    const holidays = await syncCountryHolidays(countryCode, yearToSync);
+    
+    if (holidays) {
+      res.status(200).send({ 
+        success: true, 
+        countryCode, 
+        year: yearToSync,
+        holidayCount: Object.keys(holidays).length,
+        holidays 
+      });
+    } else {
+      res.status(404).send({ 
+        success: false, 
+        error: 'No holidays found for this country' 
+      });
+    }
+  } catch (error) {
+    console.error('Error syncing holidays:', error);
+    res.status(500).send({ success: false, error: error.message });
+  }
+});
+
+/**
+ * HTTP function: Get holidays from Firestore
+ * Usage: GET /getHolidays?countryCode=IN&year=2026
+ */
+exports.getHolidays = functions.https.onRequest(async (req, res) => {
+  // Enable CORS
+  res.set('Access-Control-Allow-Origin', '*');
+  
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'GET');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(204).send('');
+    return;
+  }
+  
+  try {
+    const countryCode = req.query.countryCode;
+    const year = req.query.year || new Date().getFullYear();
+    
+    if (!countryCode) {
+      res.status(400).send({ error: 'countryCode query parameter is required' });
+      return;
+    }
+    
+    const db = admin.firestore();
+    const docRef = db.collection('holidays').doc(`${countryCode}_${year}`);
+    const doc = await docRef.get();
+    
+    if (!doc.exists) {
+      // Try to sync on-demand
+      console.log(`Cache miss for ${countryCode} ${year}, syncing now...`);
+      const holidays = await syncCountryHolidays(countryCode, year);
+      
+      if (holidays) {
+        res.status(200).send({ 
+          success: true, 
+          countryCode, 
+          year,
+          holidays,
+          cached: false
+        });
+      } else {
+        res.status(404).send({ 
+          success: false, 
+          error: 'No holidays available for this country' 
+        });
+      }
+      return;
+    }
+    
+    const data = doc.data();
+    res.status(200).send({ 
+      success: true, 
+      countryCode, 
+      year,
+      holidays: data.holidays,
+      source: data.source,
+      syncedAt: data.syncedAt,
+      cached: true
+    });
+  } catch (error) {
+    console.error('Error getting holidays:', error);
+    res.status(500).send({ success: false, error: error.message });
+  }
+});
+
