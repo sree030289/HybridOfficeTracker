@@ -304,13 +304,15 @@ class FirebaseService {
         // Cache locally
         this.cacheDataLocally(data);
         
-        // Notify app
+        // Notify app - include userData and holiday data for Cloud Function updates
         if (onDataChange) {
           onDataChange({
             attendanceData: data.attendanceData || {},
             plannedDays: data.plannedDays || {},
             userData: data.userData || {},
             settings: data.settings || { monthlyTarget: 15, targetMode: 'days' },
+            cachedHolidays: data.cachedHolidays || {},
+            holidayLastUpdated: data.holidayLastUpdated || {},
             lastUpdated: data.lastUpdated || Date.now()
           });
         }

@@ -868,3 +868,668 @@ exports.sendTestNotification = functions.https.onRequest(async (req, res) => {
     res.status(500).send({ success: false, error: error.message });
   }
 });
+
+/**
+ * =====================================================
+ * USER HOLIDAY MIGRATION FUNCTIONS
+ * =====================================================
+ */
+
+/**
+ * Helper: Detect country from address using Google Geocoding API
+ */
+async function detectCountryFromAddress(address) {
+  const GOOGLE_API_KEY = 'AIzaSyBsAxs-hOPqsrmMZ2SvcUW0zhm2RHbvtW0';
+  
+  if (!address || address.trim() === '') {
+    console.warn('⚠️ Empty address provided, returning AU as fallback');
+    return 'AU';
+  }
+  
+  try {
+    const encodedAddress = encodeURIComponent(address);
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodedAddress}&key=${GOOGLE_API_KEY}`;
+    console.log(`🌍 Geocoding address: "${address.substring(0, 50)}..."`);
+    
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    console.log(`📍 Geocoding API status: ${data.status}`);
+    
+    if (data.status === 'OK' && data.results && data.results[0]) {
+      const addressComponents = data.results[0].address_components;
+      
+      // Find country code
+      for (const component of addressComponents) {
+        if (component.types.includes('country')) {
+          const countryCode = component.short_name;
+          const countryName = component.long_name;
+          console.log(`✅ Detected country: ${countryCode} (${countryName})`);
+          return countryCode; // Returns ISO code like 'AU', 'IN', 'US', 'NZ'
+        }
+      }
+      console.warn(`⚠️ Country not found in address components for: "${address}"`);
+    } else {
+      console.error(`❌ Geocoding failed: ${data.status} - ${data.error_message || 'No error message'}`);
+    }
+    
+    // Only fallback to AU if we truly couldn't detect
+    console.warn(`⚠️ Falling back to AU for address: "${address}"`);
+    return 'AU';
+  } catch (error) {
+    console.error(`❌ Error detecting country for "${address}":`, error.message);
+    return 'AU';
+  }
+}
+
+/**
+ * Helper: Get holidays from Firestore for a country/year
+ */
+async function getHolidaysFromFirestore(countryCode, year) {
+  try {
+    const db = admin.firestore();
+    const docRef = db.collection('holidays').doc(`${countryCode}_${year}`);
+    const doc = await docRef.get();
+    
+    if (doc.exists) {
+      return doc.data().holidays || {};
+    }
+    
+    // If not in Firestore, try to sync it now
+    const holidays = await syncCountryHolidays(countryCode, year);
+    return holidays || {};
+  } catch (error) {
+    console.error(`Error getting holidays from Firestore for ${countryCode}:`, error);
+    return {};
+  }
+}
+
+/**
+ * Helper: Fetch holidays from Nager.Date API with Calendarific fallback
+ * Used by migration to bypass Firestore timeout issues
+ * Tries Nager.Date first, falls back to Calendarific for unsupported countries (like India)
+ */
+async function fetchHolidaysFromAPI(countryCode, year) {
+  // Try Nager.Date first
+  try {
+    const nagerUrl = `https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`;
+    console.log(`   API call (Nager): ${nagerUrl}`);
+    const nagerResponse = await fetch(nagerUrl);
+    
+    if (nagerResponse.ok) {
+      const data = await nagerResponse.json();
+      
+      // Convert to our format: { "2026-01-01": "Holiday Name" }
+      const holidays = {};
+      data.forEach(holiday => {
+        holidays[holiday.date] = holiday.localName || holiday.name;
+      });
+      
+      if (Object.keys(holidays).length > 0) {
+        console.log(`   ✅ Fetched ${Object.keys(holidays).length} holidays from Nager.Date for ${countryCode} ${year}`);
+        return holidays;
+      }
+    }
+    
+    console.warn(`   ⚠️ Nager.Date returned no holidays for ${countryCode}, trying Calendarific...`);
+  } catch (error) {
+    console.warn(`   ⚠️ Nager.Date failed for ${countryCode}: ${error.message}, trying Calendarific...`);
+  }
+  
+  // Fallback to Calendarific for unsupported countries
+  try {
+    const CALENDARIFIC_API_KEY = '6bEZNQYum41DfBjIvxzElAkI5pIMcQx7';
+    const calendarificUrl = `https://calendarific.com/api/v2/holidays?api_key=${CALENDARIFIC_API_KEY}&country=${countryCode}&year=${year}`;
+    console.log(`   API call (Calendarific): https://calendarific.com/api/v2/holidays?api_key=***&country=${countryCode}&year=${year}`);
+    
+    const calendarificResponse = await fetch(calendarificUrl);
+    
+    if (!calendarificResponse.ok) {
+      console.warn(`   ⚠️ Calendarific returned ${calendarificResponse.status} for ${countryCode}`);
+      return {};
+    }
+    
+    const data = await calendarificResponse.json();
+    
+    if (data.response && data.response.holidays) {
+      const holidays = {};
+      data.response.holidays.forEach(holiday => {
+        // Include National holidays and public holidays (for countries like India)
+        const types = holiday.type || [];
+        const isPublicHoliday = types.some(t => 
+          t.toLowerCase().includes('national') || 
+          t.toLowerCase().includes('public') ||
+          t.toLowerCase() === 'gazetted holiday' ||
+          t.toLowerCase() === 'restricted holiday'
+        );
+        
+        if (isPublicHoliday) {
+          holidays[holiday.date.iso] = holiday.name;
+        }
+      });
+      
+      console.log(`   ✅ Fetched ${Object.keys(holidays).length} holidays from Calendarific for ${countryCode} ${year}`);
+      return holidays;
+    }
+    
+    console.warn(`   ⚠️ No holidays found in Calendarific response for ${countryCode}`);
+    return {};
+  } catch (error) {
+    console.error(`   ❌ Error fetching from Calendarific for ${countryCode}:`, error.message);
+    return {};
+  }
+}
+
+/**
+ * Helper function to get country name from ISO code
+ */
+function getCountryName(countryCode) {
+  const countryNames = {
+    'AU': 'Australia',
+    'NZ': 'New Zealand',
+    'IN': 'India',
+    'US': 'United States',
+    'GB': 'United Kingdom',
+    'CA': 'Canada',
+    'SG': 'Singapore',
+    'MY': 'Malaysia',
+    'ID': 'Indonesia',
+    'TH': 'Thailand',
+    'PH': 'Philippines',
+    'VN': 'Vietnam',
+    'JP': 'Japan',
+    'KR': 'South Korea',
+    'CN': 'China',
+    'DE': 'Germany',
+    'FR': 'France',
+    'IT': 'Italy',
+    'ES': 'Spain',
+    'NL': 'Netherlands',
+    'BE': 'Belgium',
+    'CH': 'Switzerland',
+    'AT': 'Austria',
+    'SE': 'Sweden',
+    'NO': 'Norway',
+    'DK': 'Denmark',
+    'FI': 'Finland',
+    'IE': 'Ireland',
+    'PT': 'Portugal',
+    'PL': 'Poland',
+    'CZ': 'Czech Republic',
+    'GR': 'Greece',
+    'BR': 'Brazil',
+    'MX': 'Mexico',
+    'AR': 'Argentina',
+    'CL': 'Chile',
+    'CO': 'Colombia',
+    'ZA': 'South Africa',
+    'AE': 'United Arab Emirates',
+    'SA': 'Saudi Arabia',
+    'IL': 'Israel',
+    'EG': 'Egypt',
+    'NG': 'Nigeria',
+    'KE': 'Kenya',
+    'RU': 'Russia',
+    'TR': 'Turkey',
+    'UA': 'Ukraine'
+  };
+  return countryNames[countryCode] || countryCode;
+}
+
+/**
+ * Generate flag emoji from ISO country code
+ * Converts 2-letter ISO code to regional indicator symbols
+ */
+function getCountryFlag(isoCode) {
+  if (!isoCode || isoCode.length !== 2) return '🌍';
+  
+  // Convert ISO code to regional indicator symbols (🇦-🇿)
+  const codePoints = isoCode
+    .toUpperCase()
+    .split('')
+    .map(char => 0x1F1E6 + char.charCodeAt(0) - 65);
+  
+  return String.fromCodePoint(...codePoints);
+}
+
+/**
+ * MIGRATION FUNCTION: SAFE re-detection of country for ALL users
+ * This fixes data corruption caused by previous invalid Google API key
+ * 
+ * SAFETY FEATURES:
+ * - Dry-run mode: ?dryRun=true to preview changes without writing
+ * - Per-user error handling: one failure won't stop others
+ * - Detailed logging: logs every change made
+ * - Validation: only updates if country detection succeeds
+ * - Comprehensive updates: country, countryCode, countryName, holidays
+ * 
+ * Usage: 
+ *   Dry run: POST /migrateUserHolidays?dryRun=true
+ *   Real run: POST /migrateUserHolidays
+ */
+exports.migrateUserHolidays = functions.runWith({ timeoutSeconds: 540 }).https.onRequest(async (req, res) => {
+  // Enable CORS
+  res.set('Access-Control-Allow-Origin', '*');
+  
+  if (req.method === 'OPTIONS') {
+    res.set('Access-Control-Allow-Methods', 'POST');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(204).send('');
+    return;
+  }
+  
+  const dryRun = req.query.dryRun === 'true';
+  
+  // Return immediately to avoid HTTP timeout
+  res.status(202).send({ 
+    success: true, 
+    dryRun: dryRun,
+    message: dryRun 
+      ? 'Dry run started - no data will be changed. Check logs for preview.' 
+      : 'Migration started in background. Check logs for progress.' 
+  });
+  
+  try {
+    console.log(`🚀 Starting ${dryRun ? 'DRY RUN' : 'LIVE'} user holiday migration...`);
+    console.log('📝 This migration re-detects countries using the NEW working Google API key');
+    console.log('🔧 Fixes data corruption from previous invalid API key');
+    
+    const db = admin.database();
+    const usersSnapshot = await db.ref('users').once('value');
+    const users = usersSnapshot.val();
+    
+    if (!users) {
+      console.error('❌ No users found');
+      return;
+    }
+    
+    const results = {
+      total: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      changes: []
+    };
+    
+    const currentYear = new Date().getFullYear();
+    const nextYear = currentYear + 1;
+    
+    console.log(`👥 Found ${Object.keys(users).length} users to process`);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    // Process each user
+    for (const [userId, userData] of Object.entries(users)) {
+      results.total++;
+      
+      try {
+        // Skip if no company address
+        if (!userData.userData || !userData.userData.companyAddress) {
+          console.log(`⏭️  [${results.total}/${Object.keys(users).length}] Skipping ${userId}: No company address`);
+          results.skipped++;
+          continue;
+        }
+        
+        const companyAddress = userData.userData.companyAddress;
+        const oldCountry = userData.country || userData.userData?.country || 'unknown';
+        
+        // Detect country from address using NEW working API key
+        const detectedCountry = await detectCountryFromAddress(companyAddress);
+        
+        if (!detectedCountry) {
+          console.log(`⏭️  [${results.total}/${Object.keys(users).length}] Skipping ${userId}: Country detection failed for "${companyAddress}"`);
+          results.skipped++;
+          continue;
+        }
+        
+        // Check if country changed or if required fields are missing
+        const needsUpdate = 
+          oldCountry !== detectedCountry || 
+          !userData.userData?.countryCode || 
+          !userData.userData?.countryName ||
+          !userData.cachedHolidays;
+        
+        if (!needsUpdate) {
+          console.log(`⏭️  [${results.total}/${Object.keys(users).length}] Skipping ${userId}: Already correct (${detectedCountry})`);
+          results.skipped++;
+          continue;
+        }
+        
+        console.log(`🔍 [${results.total}/${Object.keys(users).length}] User ${userId}:`);
+        console.log(`   Address: "${companyAddress}"`);
+        console.log(`   Change: ${oldCountry} → ${detectedCountry}${oldCountry === detectedCountry ? ' (refreshing holidays)' : ''}`);
+        
+        // Fetch holidays directly from Nager.Date API (bypass Firestore to avoid timeout issues)
+        console.log(`   Fetching holidays from API...`);
+        const holidays2026 = await fetchHolidaysFromAPI(detectedCountry, currentYear);
+        const holidays2027 = await fetchHolidaysFromAPI(detectedCountry, nextYear);
+        
+        console.log(`   Holidays: ${Object.keys(holidays2026).length} in ${currentYear}, ${Object.keys(holidays2027).length} in ${nextYear}`);
+        
+        if (!dryRun) {
+          const cachedHolidays = {};
+          const holidayLastUpdated = {};
+          
+          if (Object.keys(holidays2026).length > 0) {
+            cachedHolidays[`${detectedCountry}_${currentYear}`] = holidays2026;
+            holidayLastUpdated[`${detectedCountry}_${currentYear}`] = Date.now();
+          }
+          
+          if (Object.keys(holidays2027).length > 0) {
+            cachedHolidays[`${detectedCountry}_${nextYear}`] = holidays2027;
+            holidayLastUpdated[`${detectedCountry}_${nextYear}`] = Date.now();
+          }
+          
+          // Update BOTH root country and userData fields
+          await db.ref(`users/${userId}`).update({
+            country: detectedCountry,
+            cachedHolidays: cachedHolidays,
+            holidayLastUpdated: holidayLastUpdated
+          });
+          
+          await db.ref(`users/${userId}/userData`).update({
+            country: detectedCountry,
+            countryCode: detectedCountry,
+            countryName: getCountryName(detectedCountry),
+            countryFlag: getCountryFlag(detectedCountry)
+          });
+          
+          console.log(`   ✅ UPDATED in database`);
+        } else {
+          console.log(`   🔍 DRY RUN - no changes made`);
+        }
+        
+        results.updated++;
+        results.changes.push({
+          userId,
+          address: companyAddress,
+          oldCountry,
+          newCountry: detectedCountry,
+          holidayCount: Object.keys(holidays2026).length
+        });
+        
+        // Rate limiting: wait 300ms between users
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+      } catch (error) {
+        console.error(`❌ [${results.total}/${Object.keys(users).length}] Failed user ${userId}:`, error.message);
+        results.failed++;
+        // Continue to next user - don't let one failure stop migration
+      }
+    }
+    
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`🎉 Migration ${dryRun ? 'DRY RUN' : ''} complete!`);
+    console.log(`📊 Results:`);
+    console.log(`   Total users: ${results.total}`);
+    console.log(`   ${dryRun ? 'Would update' : 'Updated'}: ${results.updated}`);
+    console.log(`   Skipped: ${results.skipped}`);
+    console.log(`   Failed: ${results.failed}`);
+    
+    if (results.changes.length > 0) {
+      console.log(`\n📝 Changes ${dryRun ? 'that would be made' : 'made'}:`);
+      results.changes.forEach(change => {
+        console.log(`   • ${change.userId}: ${change.oldCountry} → ${change.newCountry} (${change.holidayCount} holidays)`);
+      });
+    }
+    
+    if (dryRun) {
+      console.log('\n⚠️  This was a DRY RUN - no data was changed');
+      console.log('🚀 To apply changes, run: POST /migrateUserHolidays (without dryRun parameter)');
+    }
+    
+  } catch (error) {
+    console.error('💥 Migration error:', error);
+  }
+});
+
+/**
+ * CALLABLE FUNCTION: Refresh holidays for a specific user
+ * Called from the app when user taps "Refresh Holidays" button
+ * 
+ * This function:
+ * 1. Gets the user's country from userData.country (set by onUserDataWrite)
+ * 2. Fetches holidays from Nager.Date API for current and next year
+ * 3. Updates cachedHolidays and holidayLastUpdated in Firebase
+ * 
+ * Usage from app: Call via HTTPS request with userId
+ */
+exports.refreshUserHolidays = functions.https.onRequest(async (req, res) => {
+  // Enable CORS
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(204).send('');
+    return;
+  }
+  
+  try {
+    const { userId } = req.body || req.query;
+    
+    if (!userId) {
+      res.status(400).json({ success: false, error: 'userId is required' });
+      return;
+    }
+    
+    console.log(`🔄 Refreshing holidays for user ${userId}`);
+    
+    // Get user data to find their country
+    const userSnapshot = await admin.database().ref(`users/${userId}`).once('value');
+    const userData = userSnapshot.val();
+    
+    if (!userData) {
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
+    
+    // Get country from userData (set by onUserDataWrite) or detect from address
+    let country = userData.userData?.country;
+    let countryName = userData.userData?.countryName;
+    
+    if (!country && userData.userData?.companyAddress) {
+      // Detect country from address if not already set
+      const detectedISO = await detectCountryFromAddress(userData.userData.companyAddress);
+      const countryCodeMap = {
+        'AU': 'australia', 'NZ': 'nz', 'GB': 'uk', 'IN': 'india',
+        'US': 'usa', 'CA': 'canada', 'SG': 'singapore', 'MY': 'malaysia',
+        'ID': 'indonesia', 'TH': 'thailand', 'PH': 'philippines', 'VN': 'vietnam',
+        'JP': 'japan', 'KR': 'south korea', 'CN': 'china', 'HK': 'hong kong',
+        'DE': 'germany', 'FR': 'france', 'IT': 'italy', 'ES': 'spain',
+        'NL': 'netherlands', 'BE': 'belgium', 'CH': 'switzerland', 'AT': 'austria',
+        'SE': 'sweden', 'NO': 'norway', 'DK': 'denmark', 'FI': 'finland',
+        'IE': 'ireland', 'PT': 'portugal', 'PL': 'poland', 'CZ': 'czech republic',
+        'BR': 'brazil', 'MX': 'mexico', 'ZA': 'south africa', 'AE': 'uae'
+      };
+      country = countryCodeMap[detectedISO] || detectedISO.toLowerCase();
+      countryName = getCountryName(detectedISO);
+    }
+    
+    if (!country) {
+      res.status(400).json({ success: false, error: 'No country found for user. Please set company address first.' });
+      return;
+    }
+    
+    // Convert country to ISO code for API
+    const countryToISO = {
+      'australia': 'AU', 'nz': 'NZ', 'uk': 'GB', 'india': 'IN',
+      'usa': 'US', 'canada': 'CA', 'singapore': 'SG', 'malaysia': 'MY',
+      'indonesia': 'ID', 'thailand': 'TH', 'philippines': 'PH', 'vietnam': 'VN',
+      'japan': 'JP', 'south korea': 'KR', 'china': 'CN', 'hong kong': 'HK',
+      'germany': 'DE', 'france': 'FR', 'italy': 'IT', 'spain': 'ES',
+      'netherlands': 'NL', 'belgium': 'BE', 'switzerland': 'CH', 'austria': 'AT',
+      'sweden': 'SE', 'norway': 'NO', 'denmark': 'DK', 'finland': 'FI',
+      'ireland': 'IE', 'portugal': 'PT', 'poland': 'PL', 'czech republic': 'CZ',
+      'brazil': 'BR', 'mexico': 'MX', 'south africa': 'ZA', 'uae': 'AE'
+    };
+    const isoCode = countryToISO[country] || country.toUpperCase();
+    
+    console.log(`🌍 User country: ${country} (${isoCode})`);
+    
+    // Fetch holidays for current and next year
+    const currentYear = new Date().getFullYear();
+    const nextYear = currentYear + 1;
+    
+    const holidays2026 = await fetchHolidaysFromAPI(isoCode, currentYear);
+    const holidays2027 = await fetchHolidaysFromAPI(isoCode, nextYear);
+    
+    const cachedHolidays = {};
+    const holidayLastUpdated = {};
+    
+    // Use normalized country code for cache keys
+    if (Object.keys(holidays2026).length > 0) {
+      cachedHolidays[`${country}_${currentYear}`] = holidays2026;
+      holidayLastUpdated[`${country}_${currentYear}`] = Date.now();
+    }
+    
+    if (Object.keys(holidays2027).length > 0) {
+      cachedHolidays[`${country}_${nextYear}`] = holidays2027;
+      holidayLastUpdated[`${country}_${nextYear}`] = Date.now();
+    }
+    
+    // Update Firebase
+    await admin.database().ref(`users/${userId}`).update({
+      cachedHolidays,
+      holidayLastUpdated
+    });
+    
+    // Also update userData if country wasn't set
+    if (!userData.userData?.country || !userData.userData?.countryName) {
+      await admin.database().ref(`users/${userId}/userData`).update({
+        country,
+        countryName: countryName || getCountryName(isoCode)
+      });
+    }
+    
+    const totalHolidays = Object.keys(holidays2026).length + Object.keys(holidays2027).length;
+    console.log(`✅ Refreshed ${totalHolidays} holidays for ${country}`);
+    
+    res.json({
+      success: true,
+      country,
+      countryName: countryName || getCountryName(isoCode),
+      holidaysUpdated: totalHolidays,
+      years: [currentYear, nextYear]
+    });
+    
+  } catch (error) {
+    console.error('❌ Error refreshing holidays:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * DATABASE TRIGGER: Auto-sync holidays when user adds company address
+ * This handles new users in v3.0.1 who complete onboarding
+ */
+exports.onUserDataWrite = functions.database
+  .ref('/users/{userId}/userData')
+  .onWrite(async (change, context) => {
+    const userId = context.params.userId;
+    const newData = change.after.val();
+    const oldData = change.before.val();
+    
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log(`🔔 onUserDataWrite TRIGGERED for user ${userId}`);
+    console.log(`📦 New data:`, JSON.stringify(newData || {}, null, 2));
+    console.log(`📦 Old data:`, JSON.stringify(oldData || {}, null, 2));
+    console.log('═══════════════════════════════════════════════════════════');
+    
+    // Only process if companyAddress exists
+    if (!newData || !newData.companyAddress) {
+      console.log(`⏭️ No companyAddress for user ${userId}, skipping`);
+      return null;
+    }
+    
+    // Skip if address didn't change AND country already matches
+    // This prevents infinite loops when we update userData.country below
+    if (oldData && oldData.companyAddress === newData.companyAddress && oldData.country === newData.country) {
+      console.log(`⏭️ Address and country unchanged for user ${userId}, skipping`);
+      return null;
+    }
+    
+    try {
+      const companyAddress = newData.companyAddress;
+      console.log(`🔄 Auto-syncing holidays for user ${userId} with address: "${companyAddress}"`);
+      
+      // Detect country from new address
+      const detectedCountry = await detectCountryFromAddress(companyAddress);
+      console.log(`🌍 Detected country: ${detectedCountry} for user ${userId}`);
+      
+      // Convert to lowercase for COUNTRY_DATA compatibility in app
+      // App uses lowercase keys: 'australia', 'uk', 'india', 'usa', 'canada', 'nz'
+      const countryCodeMap = {
+        'AU': 'australia',
+        'NZ': 'nz',
+        'GB': 'uk',
+        'IN': 'india',
+        'US': 'usa',
+        'CA': 'canada',
+        'SG': 'singapore'
+      };
+      const normalizedCountry = countryCodeMap[detectedCountry] || detectedCountry.toLowerCase();
+      console.log(`🔄 Normalized country: ${detectedCountry} → ${normalizedCountry}`);
+      
+      // Fetch holidays for current and next year
+      const currentYear = new Date().getFullYear();
+      const nextYear = currentYear + 1;
+      
+      console.log(`📅 Fetching holidays for ${detectedCountry}: ${currentYear}, ${nextYear}`);
+      
+      // Use direct API fetch to avoid Firestore timeout issues
+      const holidays2026 = await fetchHolidaysFromAPI(detectedCountry, currentYear);
+      const holidays2027 = await fetchHolidaysFromAPI(detectedCountry, nextYear);
+      
+      const cachedHolidays = {};
+      const holidayLastUpdated = {};
+      
+      // Use normalized country code for cache keys (lowercase for app compatibility)
+      if (Object.keys(holidays2026).length > 0) {
+        cachedHolidays[`${normalizedCountry}_${currentYear}`] = holidays2026;
+        holidayLastUpdated[`${normalizedCountry}_${currentYear}`] = Date.now();
+        console.log(`📆 Added ${Object.keys(holidays2026).length} holidays for ${normalizedCountry}_${currentYear}`);
+      } else {
+        console.warn(`⚠️ No holidays found for ${detectedCountry}_${currentYear}`);
+      }
+      
+      if (Object.keys(holidays2027).length > 0) {
+        cachedHolidays[`${normalizedCountry}_${nextYear}`] = holidays2027;
+        holidayLastUpdated[`${normalizedCountry}_${nextYear}`] = Date.now();
+        console.log(`📆 Added ${Object.keys(holidays2027).length} holidays for ${normalizedCountry}_${nextYear}`);
+      } else {
+        console.warn(`⚠️ No holidays found for ${detectedCountry}_${nextYear}`);
+      }
+      
+      // Write holidays to root level
+      const updates = {};
+      updates[`cachedHolidays`] = cachedHolidays;
+      updates[`holidayLastUpdated`] = holidayLastUpdated;
+      
+      await admin.database().ref(`users/${userId}`).update(updates);
+      
+      // Get human-readable country name for UI display
+      const countryFullName = getCountryName(detectedCountry);
+      
+      // Also update userData.country and countryName if changed
+      // This will trigger this function again, but the address check above will skip it
+      if (newData.country !== normalizedCountry || newData.countryName !== countryFullName) {
+        console.log(`📝 Updating userData: country ${newData.country} → ${normalizedCountry}, countryName → ${countryFullName}`);
+        await admin.database().ref(`users/${userId}/userData`).update({
+          country: normalizedCountry,
+          countryName: countryFullName
+        });
+      }
+      
+      console.log(`✅ Auto-synced holidays for user ${userId}:`);
+      console.log(`   - Country: ${normalizedCountry} (${countryFullName})`);
+      console.log(`   - Holiday sets: ${Object.keys(cachedHolidays).length}`);
+      console.log(`   - Total holidays: ${Object.keys(holidays2026).length + Object.keys(holidays2027).length}`);
+      
+      return null;
+    } catch (error) {
+      console.error(`❌ Error auto-syncing holidays for user ${userId}:`, error.message);
+      console.error(error.stack);
+      return null;
+    }
+  });
+

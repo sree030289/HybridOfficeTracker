@@ -444,6 +444,19 @@ const COUNTRY_DATA = {
   'Nine Entertainment Co.', 'Lottery Corporation (The)', 'ARS-Group (Australia)', 'A2 Milk Company', 'Aristocrat Leisure',
   'Bendigo Bank', 'Bank of Queensland']
   },
+  nz: {
+    name: 'New Zealand',
+    publicHolidays: [
+      '2025-01-01', '2025-01-02', '2025-02-06', '2025-04-18', '2025-04-21',
+      '2025-04-25', '2025-06-02', '2025-06-20', '2025-10-27', '2025-12-25', '2025-12-26'
+    ],
+    popularCompanies: [
+      'Xero', 'Fonterra', 'Fisher & Paykel Healthcare', 'Spark New Zealand', 'Auckland International Airport',
+      'Meridian Energy', 'Contact Energy', 'Mainfreight', 'EBOS Group', 'Infratil',
+      'Fletcher Building', 'Mercury NZ', 'Air New Zealand', 'Chorus', 'Ryman Healthcare',
+      'Summerset Group', 'Z Energy', 'SkyCity Entertainment Group', 'Synlait Milk', 'Pushpay'
+    ]
+  },
   india: {
     name: 'India',
     publicHolidays: [
@@ -533,48 +546,9 @@ const PUBLIC_HOLIDAYS = {
   canada: COUNTRY_DATA.canada.publicHolidays
 };
 
-// Country code mapping for Nager.Date API
-const COUNTRY_CODE_MAPPING = {
-  australia: 'AU',
-  india: 'IN',
-  usa: 'US',
-  uk: 'GB',
-  canada: 'CA'
-};
-
 // Dynamic popular companies based on location
 const getPopularCompanies = (country = 'australia') => {
   return COUNTRY_DATA[country]?.popularCompanies || COUNTRY_DATA.australia.popularCompanies;
-};
-
-// Dynamic public holidays fetching from Nager.Date API
-const fetchPublicHolidays = async (country = 'australia', year = new Date().getFullYear()) => {
-  const countryCode = COUNTRY_CODE_MAPPING[country] || 'AU';
-  
-  try {
-    console.log(`Fetching holidays for ${country} (${countryCode}) year ${year}`);
-    const response = await fetch(`https://date.nager.at/api/v3/publicholidays/${year}/${countryCode}`);
-    
-    if (response.ok) {
-      const holidays = await response.json();
-      // Extract dates and names for 'Public' type holidays
-      const holidayData = holidays
-        .filter(holiday => holiday.types && holiday.types.includes('Public'))
-        .reduce((acc, holiday) => {
-          acc[holiday.date] = holiday.name;
-          return acc;
-        }, {});
-      
-      console.log(`Fetched ${Object.keys(holidayData).length} public holidays for ${country} ${year}`);
-      return holidayData;
-    } else {
-      console.warn(`Failed to fetch holidays for ${country}: ${response.status}`);
-      return null;
-    }
-  } catch (error) {
-    console.error(`Error fetching holidays for ${country}:`, error);
-    return null;
-  }
 };
 
 // Cache key for holidays
@@ -710,51 +684,80 @@ export default function App() {
     }
   };
 
-  // Update holidays for a specific country and year
-  const updateHolidaysForCountry = async (country, year) => {
-    const cacheKey = getHolidayCacheKey(country, year);
-    
-    // Skip if already updated recently
-    if (isCacheValid(country, year, holidayLastUpdated)) {
-      console.log(`Holidays for ${country} ${year} are already up to date`);
-      return;
-    }
-
-    console.log(`Updating holidays for ${country} ${year}...`);
-    setIsLoadingHolidays(true);
-
-    const newHolidays = await fetchPublicHolidays(country, year);
-    
-    if (newHolidays) {
-      const newCachedHolidays = { ...cachedHolidays, [cacheKey]: newHolidays };
-      const newTimestamps = { ...holidayLastUpdated, [cacheKey]: Date.now() };
+  // Reload holidays from Firebase cache (no client-side API calls)
+  const reloadHolidaysFromFirebase = async () => {
+    try {
+      console.log('🔄 Reloading holidays from Firebase...');
+      setIsLoadingHolidays(true);
       
-      await saveCachedHolidays(newCachedHolidays, newTimestamps);
-      console.log(`Successfully updated holidays for ${country} ${year}`);
+      const firebaseData = await firebaseService.getAllData();
       
-      // Show success message only for manual updates (not automatic ones)
-      if (country === userData.country) {
-        const countryName = COUNTRY_DATA[country]?.name || country;
-        const count = Array.isArray(newHolidays) ? newHolidays.length : Object.keys(newHolidays).length;
-        console.log(`✅ Updated ${count} public holidays for ${countryName} ${year}`);
+      if (firebaseData.cachedHolidays && Object.keys(firebaseData.cachedHolidays).length > 0) {
+        console.log('📅 Loaded holidays from Firebase:', Object.keys(firebaseData.cachedHolidays));
+        setCachedHolidays(firebaseData.cachedHolidays);
+        if (firebaseData.holidayLastUpdated) {
+          setHolidayLastUpdated(firebaseData.holidayLastUpdated);
+        }
+        
+        // Also update AsyncStorage backup
+        await AsyncStorage.setItem('cachedHolidays', JSON.stringify(firebaseData.cachedHolidays));
+        if (firebaseData.holidayLastUpdated) {
+          await AsyncStorage.setItem('holidayLastUpdated', JSON.stringify(firebaseData.holidayLastUpdated));
+        }
+        
+        setIsLoadingHolidays(false);
+        return true;
       }
-    } else {
-      console.warn(`Failed to update holidays for ${country} ${year}, using static data`);
+      
+      console.log('⚠️ No holidays found in Firebase cache');
+      setIsLoadingHolidays(false);
+      return false;
+    } catch (error) {
+      console.error('Error reloading holidays from Firebase:', error);
+      setIsLoadingHolidays(false);
+      return false;
     }
-    
-    setIsLoadingHolidays(false);
   };
 
-  // Update holidays for current and next year
-  const updateCurrentYearHolidays = async (country) => {
-    const currentYear = new Date().getFullYear();
-    const nextYear = currentYear + 1;
-    
-    // Update both current and next year holidays
-    await Promise.all([
-      updateHolidaysForCountry(country, currentYear),
-      updateHolidaysForCountry(country, nextYear)
-    ]);
+  // Call Firebase function to refresh holidays from API, then reload from cache
+  const refreshHolidaysViaFirebase = async (userId) => {
+    try {
+      console.log('🔄 Calling Firebase function to refresh holidays...');
+      setIsLoadingHolidays(true);
+      
+      // Call the Firebase Cloud Function
+      const response = await fetch(
+        'https://us-central1-hybridofficetracker.cloudfunctions.net/refreshUserHolidays',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId })
+        }
+      );
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        console.log(`✅ Firebase refreshed ${result.holidaysUpdated} holidays for ${result.countryName}`);
+        
+        // Reload the updated holidays from Firebase into app state
+        await reloadHolidaysFromFirebase();
+        
+        Alert.alert(
+          '✅ Holidays Updated',
+          `Refreshed ${result.holidaysUpdated} public holidays for ${result.countryName} (${result.years.join(', ')})`
+        );
+      } else {
+        console.error('❌ Firebase refresh failed:', result.error);
+        Alert.alert('Update Failed', result.error || 'Could not refresh holidays. Please try again.');
+      }
+      
+      setIsLoadingHolidays(false);
+    } catch (error) {
+      console.error('Error calling Firebase refresh function:', error);
+      Alert.alert('Update Failed', 'Network error. Please check your connection and try again.');
+      setIsLoadingHolidays(false);
+    }
   };
 
   // Get public holidays with caching (component version that can access state)
@@ -798,23 +801,21 @@ export default function App() {
     };
   }, []);
 
-  // Monitor year changes and update holidays
+  // Monitor year changes and reload holidays from Firebase
   useEffect(() => {
     // Only run after Firebase is initialized and data is loaded
     if (!dataLoaded) return;
     
-    const checkYearChange = () => {
+    const checkYearChange = async () => {
       const currentYear = new Date().getFullYear();
-      const storedYear = AsyncStorage.getItem('lastHolidayYear');
+      const storedYear = await AsyncStorage.getItem('lastHolidayYear');
       
       if (storedYear && parseInt(storedYear) !== currentYear) {
-        console.log('Year changed, updating holidays...');
-        if (userData.country) {
-          updateCurrentYearHolidays(userData.country);
-        }
-        AsyncStorage.setItem('lastHolidayYear', currentYear.toString());
+        console.log('Year changed, reloading holidays from Firebase...');
+        await reloadHolidaysFromFirebase();
+        await AsyncStorage.setItem('lastHolidayYear', currentYear.toString());
       } else if (!storedYear) {
-        AsyncStorage.setItem('lastHolidayYear', currentYear.toString());
+        await AsyncStorage.setItem('lastHolidayYear', currentYear.toString());
       }
     };
 
@@ -825,14 +826,14 @@ export default function App() {
     return () => clearInterval(yearCheckInterval);
   }, [userData.country, dataLoaded]);
 
-  // Update holidays when user's country changes
+  // Reload holidays when user's country changes (holidays are already in Firebase)
   useEffect(() => {
     // Only run after Firebase is initialized and data is loaded
     if (!dataLoaded) return;
     
     if (userData.country) {
-      console.log(`Country changed to ${userData.country}, updating holidays...`);
-      updateCurrentYearHolidays(userData.country);
+      console.log(`Country changed to ${userData.country}, reloading holidays from Firebase...`);
+      reloadHolidaysFromFirebase();
     }
   }, [userData.country, dataLoaded]);
 
@@ -1337,24 +1338,17 @@ export default function App() {
           if (allData.holidayLastUpdated) {
             setHolidayLastUpdated(allData.holidayLastUpdated);
           }
-        }
-        
-        // Auto-update holidays for user's country if not exists or outdated
-        if (allData.userData?.country) {
-          const currentYear = new Date().getFullYear();
-          const cacheKey = getHolidayCacheKey(allData.userData.country, currentYear);
-          
-          // Only fetch if we don't have holidays or they're outdated
-          if (!allData.cachedHolidays?.[cacheKey] || !isCacheValid(allData.userData.country, currentYear, allData.holidayLastUpdated || {})) {
-            console.log('📅 Fetching latest holidays for', allData.userData.country);
-            await updateCurrentYearHolidays(allData.userData.country);
-          }
+        } else {
+          // If no holidays in Firebase yet, try to reload (Firebase function may have already populated them)
+          console.log('📅 No holidays in cache, attempting reload from Firebase...');
+          await reloadHolidaysFromFirebase();
         }
         
         // Now show calendar screen with holidays loaded
         setScreen('calendar');
         
         // Setup real-time sync to keep data in sync across sessions
+        // This also syncs userData, holidays to pick up Cloud Function updates
         firebaseService.setupRealtimeSync((syncedData) => {
           console.log('🔄 Syncing data from Firebase...');
           // Set flag to prevent auto-save loop
@@ -1363,6 +1357,24 @@ export default function App() {
           setPlannedDays(syncedData.plannedDays || {});
           setMonthlyTarget(syncedData.settings?.monthlyTarget || 15);
           setTargetMode(syncedData.settings?.targetMode || 'days');
+          
+          // CRITICAL: Sync userData to pick up Cloud Function updates (country, countryName)
+          if (syncedData.userData) {
+            console.log(`👤 Syncing userData from Firebase: Country=${syncedData.userData.country}, Name=${syncedData.userData.countryName}`);
+            setUserData(prev => ({
+              ...prev,
+              ...syncedData.userData,
+              userId: prev.userId // Preserve userId
+            }));
+          }
+          
+          // CRITICAL: Sync holidays to pick up Cloud Function updates
+          if (syncedData.cachedHolidays && Object.keys(syncedData.cachedHolidays).length > 0) {
+            setCachedHolidays(syncedData.cachedHolidays);
+          }
+          if (syncedData.holidayLastUpdated) {
+            setHolidayLastUpdated(syncedData.holidayLastUpdated);
+          }
         });
         
         // Setup notifications based on tracking mode
@@ -2614,7 +2626,7 @@ export default function App() {
         date: dateStr,
         isToday: dateStr === today,
         isWeekend: isWeekendDate(dateStr), // Use the proper weekend detection function
-        isHoliday: getPublicHolidays(userData.country).includes(dateStr),
+        isHoliday: getPublicHolidays(userData.country, year).includes(dateStr),
         type: attendanceData[dateStr],
         planned: plannedDays[dateStr]
       });
@@ -2700,7 +2712,7 @@ export default function App() {
       }
 
       // Check if public holiday
-      const publicHolidays = getPublicHolidays(userData.country);
+      const publicHolidays = getPublicHolidays(userData.country, year);
       if (publicHolidays.includes(dateStr)) {
         holidays++;
         continue;
@@ -2783,7 +2795,7 @@ export default function App() {
       
       // Skip weekends and holidays for working days count
       if (!isWeekendDate(dateStr)) {
-        const publicHolidays = getPublicHolidays(userData.country);
+        const publicHolidays = getPublicHolidays(userData.country, year);
         if (!publicHolidays.includes(dateStr) && plannedDays[dateStr] !== 'leave') {
           workingDaysPassed++;
         }
@@ -3470,7 +3482,9 @@ export default function App() {
     let weekendDays = 0;
     let publicHolidayDays = 0;
     
-    const publicHolidays = getPublicHolidays(userData.country || 'australia');
+    // Get year from referenceDate for correct holiday lookup
+    const statsYear = referenceDate.getFullYear();
+    const publicHolidays = getPublicHolidays(userData.country || 'australia', statsYear);
     
     // Count attendance and calculate working days correctly
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
@@ -3760,7 +3774,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
         const isCurrentMonth = currentDate.getMonth() === month;
         const isPast = currentDate < today && dateStr !== todayStr;
         const isWeekend = isWeekendDate(dateStr);
-        const isHoliday = getPublicHolidays(userData.country || 'australia').includes(dateStr);
+        const isHoliday = getPublicHolidays(userData.country || 'australia', currentDate.getFullYear()).includes(dateStr);
         const isPlanned = plannedDays[dateStr] === 'office';
         const isWFHPlanned = plannedDays[dateStr] === 'wfh';
         // Allow holidays to be selectable, only disable weekends and past/future months
@@ -4491,7 +4505,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
               const isToday = dateStr === todayStr;
               const isWeekend = isWeekendDate(dateStr);
-              const isHoliday = getPublicHolidays(userData.country || 'australia').includes(dateStr);
+              const isHoliday = getPublicHolidays(userData.country || 'australia', currentYear).includes(dateStr);
               const isSelected = selectedDates.includes(dateStr);
               const attendance = attendanceData[dateStr];
               
@@ -4954,11 +4968,13 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
           <TouchableOpacity 
             style={styles.settingsItem}
             onPress={() => {
-              const countryData = COUNTRY_DATA[userData.country || 'australia'];
+              // Use countryName from userData (set by Firebase function) with fallback
+              const countryCode = (userData.country || 'australia').toLowerCase();
+              const countryName = userData.countryName || COUNTRY_DATA[countryCode]?.name || countryCode.toUpperCase();
               const currentYear = new Date().getFullYear();
-              const cacheKey = getHolidayCacheKey(userData.country || 'australia', currentYear);
+              const cacheKey = getHolidayCacheKey(countryCode, currentYear);
               const lastUpdate = holidayLastUpdated[cacheKey];
-              const isValid = isCacheValid(userData.country || 'australia', currentYear, holidayLastUpdated);
+              const isValid = isCacheValid(countryCode, currentYear, holidayLastUpdated);
               
               let statusText = '';
               if (lastUpdate) {
@@ -4970,14 +4986,17 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               
               Alert.alert(
                 '🌍 Location & Holidays',
-                `Detected Country: ${countryData.name}\n\nPublic holidays and company suggestions are customized for ${countryData.name}.${statusText}`,
+                `Detected Country: ${countryName}\n\nPublic holidays and company suggestions are customized for ${countryName}.${statusText}`,
                 [
                   { text: 'Cancel', style: 'cancel' },
                   { 
                     text: '🔄 Refresh Holidays', 
                     onPress: () => {
-                      updateCurrentYearHolidays(userData.country || 'australia');
-                      Alert.alert('Holiday Update', 'Refreshing public holidays data...');
+                      if (userData.userId) {
+                        refreshHolidaysViaFirebase(userData.userId);
+                      } else {
+                        Alert.alert('Error', 'User not logged in. Please restart the app.');
+                      }
                     }
                   }
                 ]
@@ -4987,7 +5006,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
             <Text style={styles.settingsItemIcon}>🌍</Text>
             <Text style={styles.settingsItemText}>Location & Holidays</Text>
             <View style={styles.settingsItemRightContainer}>
-              <Text style={styles.settingsItemValue}>{COUNTRY_DATA[userData.country || 'australia']?.name || 'Australia'}</Text>
+              <Text style={styles.settingsItemValue}>{userData.countryName || COUNTRY_DATA[(userData.country || '').toLowerCase()]?.name || userData.country?.toUpperCase() || 'Australia'}</Text>
               {isLoadingHolidays && <Text style={styles.settingsItemBadge}>Updating...</Text>}
             </View>
           </TouchableOpacity>
@@ -5819,6 +5838,7 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
               }
               
               // Setup real-time sync
+              // This also syncs userData, holidays to pick up Cloud Function updates
               firebaseService.setupRealtimeSync((syncedData) => {
                 console.log('🔄 Syncing data from Firebase...');
                 // Set flag to prevent auto-save loop
@@ -5827,6 +5847,23 @@ Generated by OfficeTracker - Your Hybrid Work Companion`;
                 setPlannedDays(syncedData.plannedDays || {});
                 setMonthlyTarget(syncedData.settings?.monthlyTarget || 15);
                 setTargetMode(syncedData.settings?.targetMode || 'days');
+                
+                // CRITICAL: Sync userData to pick up Cloud Function updates (country, countryName)
+                if (syncedData.userData) {
+                  setUserData(prev => ({
+                    ...prev,
+                    ...syncedData.userData,
+                    userId: prev.userId // Preserve userId
+                  }));
+                }
+                
+                // CRITICAL: Sync holidays to pick up Cloud Function updates
+                if (syncedData.cachedHolidays && Object.keys(syncedData.cachedHolidays).length > 0) {
+                  setCachedHolidays(syncedData.cachedHolidays);
+                }
+                if (syncedData.holidayLastUpdated) {
+                  setHolidayLastUpdated(syncedData.holidayLastUpdated);
+                }
               });
 
               // Navigate to home screen - no sample data for new users
